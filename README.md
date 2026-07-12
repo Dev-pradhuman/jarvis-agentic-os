@@ -15,7 +15,7 @@ WebSockets.
 | Service       | Port  | Runtime            | Folder          |
 |---------------|-------|--------------------|-----------------|
 | Frontend UI   | 5173  | React 19 + Vite    | `frontend/`     |
-| Orchestrator  | 3000  | Node.js + Express  | `orchestrator/` |
+| Orchestrator  | 3030  | Node.js + Express  | `orchestrator/` |
 | STT Engine    | 8000  | Python + FastAPI   | `ml/stt_service.py` |
 | TTS Engine    | 8001  | Python + FastAPI   | `ml/tts_service.py` |
 | Data Vault    | fs    | Obsidian markdown  | `vault/Jarvis_Vault/` |
@@ -35,7 +35,7 @@ python stt_service.py   # :8000
 python tts_service.py   # :8001
 
 # 2. Orchestrator
-cd orchestrator && npm install && npm run dev   # :3000
+cd orchestrator && npm install && npm run dev   # :3030
 
 # 3. Frontend
 cd frontend && npm install && npm run dev        # :5173
@@ -61,11 +61,32 @@ See the master spec. Current status: **scaffold complete**, service logic stubbe
 ## Running the app (dev)
 
 - ML:            `ml/.venv/Scripts/python ml/stt_service.py` and `... tts_service.py`
-- Orchestrator:  `npm --prefix orchestrator run dev`   (:3000)
+- Orchestrator:  `npm --prefix orchestrator run dev`   (:3030)
 - Frontend:      `npm --prefix frontend run dev`        (:5173)
 
 Frontend UI is ported from the Lovable "Jarvis Command Center" project
 (editor: lovable.dev/projects/3f18d5dc-8e90-43c6-b91b-e633695575ff).
+
+## Multi-CLI chat + shared Brain
+
+The **All Chats** tab runs your real agent CLIs and shares one memory across them.
+
+- **CLIs** (auto-detected): Claude Code, OpenCode, Gemini, Codex (Antigravity shown
+  disabled until installed). Pick a CLI → model → effort, type a task, and it spawns
+  the *real* CLI headlessly in the selected project folder and streams the output.
+  - Effort maps to a native flag where supported (`claude --effort`,
+    `codex -c model_reasoning_effort=`); otherwise it's injected as a prompt hint.
+- **The Brain** lives at `C:\Users\Pradhuman\projects\.jarvis-brain\`:
+  - `BRAIN.md` — main brain (shared by every CLI and folder)
+  - `folders/<name>/BRAIN.md` — per-folder sub-brain
+  - `chats.jsonl` (global) + `folders/<name>/chats.jsonl` — every exchange, all CLIs
+  - Before each run the main brain + the folder sub-brain + recent conversation are
+    prepended to the prompt, so all CLIs share context.
+- Choosing a folder in the top bar ("Working in …") jumps to that sub-brain's
+  All Chats view. Override the root with `JARVIS_PROJECTS_ROOT`.
+
+> Note: these CLIs run as autonomous agents (e.g. `gemini --approval-mode yolo`,
+> `codex exec`) with real file/system access in the chosen folder.
 
 ## Live data sources (no mock)
 

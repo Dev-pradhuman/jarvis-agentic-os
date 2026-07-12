@@ -37,7 +37,7 @@ function buildPrompt(sopFile, runtimeContext) {
  * @param {(line: string) => void} onLog  called for each stdout chunk
  * @returns {Promise<{status:'success'|'error', code:number, output:string}>}
  */
-export function runSkill(sopFile, runtimeContext, onLog = () => {}) {
+export function runSkill(sopFile, runtimeContext, onLog = () => {}, onChild = () => {}) {
   const prompt = buildPrompt(sopFile, runtimeContext);
 
   return new Promise((resolve) => {
@@ -48,6 +48,7 @@ export function runSkill(sopFile, runtimeContext, onLog = () => {}) {
       cwd: VAULT,
       shell: process.platform === 'win32', // resolve claude.cmd/.exe on Windows
     });
+    onChild(proc);
 
     proc.stdin?.write(prompt);
     proc.stdin?.end();

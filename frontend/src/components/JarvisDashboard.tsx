@@ -894,7 +894,7 @@ export function JarvisDashboard() {
   }, [activeSkills, running?.skill.id]);
 
   return (
-    <main className="h-screen w-screen p-4 overflow-hidden relative">
+    <main className="h-full w-full p-4 overflow-hidden relative">
       <GridBackdrop />
       <div className="grid gap-4 h-full" style={{ gridTemplateColumns: "300px 1fr 1fr 320px" }}>
         <div className="col-span-1 h-full min-h-0">

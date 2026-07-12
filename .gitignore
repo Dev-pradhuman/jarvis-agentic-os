@@ -30,3 +30,6 @@ Thumbs.db
 # Working screenshots / automation scratch (keep docs/ hero image)
 /jarvis-*.png
 .playwright-mcp/
+
+# Editor / tool artifacts
+.opencode/
