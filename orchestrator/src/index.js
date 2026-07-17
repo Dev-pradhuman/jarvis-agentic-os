@@ -656,28 +656,37 @@ io.on('connection', (socket) => {
 
   let ptyProcess = null;
 
-  socket.on('terminal_start', ({ cli, cols, rows } = {}) => {
+  socket.on('terminal_start', ({ cli, folder, cols, rows } = {}) => {
     if (ptyProcess) return;
 
     // WARNING: This gives full shell access! Bind to localhost only! No external exposure!
-    const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-    let cmd = shell;
-    let args = [];
+    const isWin = os.platform() === 'win32';
+    const shell = isWin ? 'powershell.exe' : 'bash';
 
-    if (cli === 'claude') {
-      args = ['-NoExit', '-Command', 'claude --dangerously-skip-permissions'];
-      if (os.platform() !== 'win32') args = ['-c', 'claude --dangerously-skip-permissions'];
-    } else if (cli === 'agy') {
-      args = ['-NoExit', '-Command', 'agy --dangerously-skip-permissions'];
-      if (os.platform() !== 'win32') args = ['-c', 'agy --dangerously-skip-permissions'];
+    // Launch the SAME command the pop-out console uses for this CLI (registry
+    // default or the user's override), so every CLI — not just claude — opens
+    // its interactive session here. Empty `cli` => a plain interactive shell.
+    const launch = cli ? getCliCommand(cli) : '';
+    let args;
+    if (launch) {
+      args = isWin ? ['-NoExit', '-Command', launch] : ['-lc', `${launch}; exec bash`];
+    } else {
+      args = isWin ? ['-NoLogo'] : ['-l'];
+    }
+
+    // Run in the selected project folder so the CLI acts on the right project.
+    let cwd = ROOT;
+    if (folder) {
+      const candidate = path.join(ROOT, folder);
+      if (candidate.startsWith(ROOT)) cwd = candidate; // guard against path escape
     }
 
     try {
-      ptyProcess = pty.spawn(cmd, args, {
+      ptyProcess = pty.spawn(shell, args, {
         name: 'xterm-256color',
         cols: cols || 80,
         rows: rows || 24,
-        cwd: process.env.HOME || process.cwd(),
+        cwd,
         env: process.env
       });
       ptyProcess.onData((data) => {

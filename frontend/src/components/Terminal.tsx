@@ -5,7 +5,7 @@ import { io } from 'socket.io-client';
 import '@xterm/xterm/css/xterm.css';
 import { useJarvisStore } from '../store';
 
-export function CommandTerminal({ cli = '' }: { cli?: string }) {
+export function CommandTerminal({ cli = '', folder = '' }: { cli?: string; folder?: string }) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const setTerminalConnected = useJarvisStore((s) => s.setTerminalConnected);
 
@@ -43,7 +43,7 @@ export function CommandTerminal({ cli = '' }: { cli?: string }) {
 
         socket.on('connect', () => {
           setTerminalConnected(true);
-          socket.emit('terminal_start', { cli, cols: term.cols, rows: term.rows });
+          socket.emit('terminal_start', { cli, folder, cols: term.cols, rows: term.rows });
         });
 
         socket.on('disconnect', () => {
@@ -86,7 +86,7 @@ export function CommandTerminal({ cli = '' }: { cli?: string }) {
       term.dispose();
       setTerminalConnected(false);
     };
-  }, [cli, setTerminalConnected]);
+  }, [cli, folder, setTerminalConnected]);
 
   return (
     <div className="glass-panel overflow-hidden relative flex flex-col h-full w-full">

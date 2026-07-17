@@ -325,8 +325,19 @@ function ChatPane({ agentId, onClose }: { agentId: string; onClose: () => void }
             <StopCircle className="h-3 w-3" /> stop
           </button>
         )}
+        {!isApi && (
+          <button
+            onClick={() => setShowTerminal((v) => !v)}
+            title={showTerminal ? "Switch to piped chat" : "Open a live interactive terminal for this CLI"}
+            className="ml-auto flex items-center gap-1 font-mono text-[10px] px-1.5 py-0.5 rounded"
+            style={showTerminal
+              ? { color, background: `${color}1a`, border: `1px solid ${color}55` }
+              : { color: "#9ca3af", background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+            <TerminalSquare className="h-3 w-3" /> {showTerminal ? "chat" : "term"}
+          </button>
+        )}
         <select value={model} onChange={(e) => setModel(e.target.value)}
-          className="ml-auto bg-white/[0.03] border border-white/[0.08] rounded-md px-1.5 py-1 font-mono text-[10px] text-white/85 outline-none max-w-[150px]">
+          className={`${isApi ? "ml-auto " : ""}bg-white/[0.03] border border-white/[0.08] rounded-md px-1.5 py-1 font-mono text-[10px] text-white/85 outline-none max-w-[150px]`}>
           {models.length === 0 && <option className="bg-[#0b0b0f]">{isApi ? "discovering…" : "—"}</option>}
           {models.map((m: any) => <option key={m.id} value={m.id} className="bg-[#0b0b0f]">{m.label}</option>)}
         </select>
@@ -335,9 +346,9 @@ function ChatPane({ agentId, onClose }: { agentId: string; onClose: () => void }
         </button>
       </div>
 
-      {(agentId === 'claude' || agentId === 'agy') ? (
+      {showTerminal && !isApi ? (
         <div className="flex-1 overflow-hidden relative">
-          <CommandTerminal cli={agentId} />
+          <CommandTerminal cli={agentId} folder={activeFolder} />
         </div>
       ) : (
         <>
