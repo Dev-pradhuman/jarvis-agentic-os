@@ -17,12 +17,40 @@ import { enabledForBridge } from './mcp.js';
 // connections across chats (an MCP host normally keeps servers alive) — otherwise
 // every message would respawn all of them.
 const CONNECT_TIMEOUT_MS = Number(process.env.JARVIS_MCP_CONNECT_TIMEOUT_MS || 20000);
+// Reused connections shouldn't linger forever — after this long with no chat
+// touching them, the servers are shut down and the next chat pays one cold start.
+// Set JARVIS_MCP_IDLE_MS=0 to keep them resident for the orchestrator's life.
+const IDLE_MS = Number(process.env.JARVIS_MCP_IDLE_MS ?? 10 * 60 * 1000);
 
-let cache = null; // { sig, clients, tools, toolMap }
+let cache = null; // { sig, clients, tools, toolMap, lastUsed }
+let idleTimer = null;
 
 /** Identity of the enabled server set — a change invalidates the cache. */
 function signature(servers) {
   return servers.map((s) => `${s.name}:${s.command}:${(s.args || []).join(' ')}:${s.url || ''}`).join('|');
+}
+
+function stopIdleTimer() {
+  if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
+}
+
+/** Mark the cache as in-use and (re)arm the idle sweep. */
+function touch(onLog = () => {}) {
+  if (!cache || IDLE_MS <= 0) return;
+  cache.lastUsed = Date.now();
+  if (idleTimer) return;
+  idleTimer = setInterval(async () => {
+    if (!cache) { stopIdleTimer(); return; }
+    if (Date.now() - cache.lastUsed < IDLE_MS) return;
+    const { clients } = cache;
+    cache = null;
+    stopIdleTimer();
+    await closeAll(clients);
+    const forStr = IDLE_MS >= 60_000 ? `${Math.round(IDLE_MS / 60000)}m` : `${Math.round(IDLE_MS / 1000)}s`;
+    onLog(`[mcp] idle ${forStr} — shut down ${clients.length} server(s)\n`);
+  }, Math.max(5_000, Math.floor(IDLE_MS / 4)));
+  // Never hold the process open just to run the sweep.
+  idleTimer.unref?.();
 }
 
 function withTimeout(promise, ms, label) {
@@ -59,10 +87,11 @@ async function closeAll(clients) {
 export async function connectTools(onLog = () => {}) {
   const servers = enabledForBridge();
   const sig = signature(servers);
-  if (cache && cache.sig === sig) return cache; // reuse the live servers
+  if (cache && cache.sig === sig) { touch(onLog); return cache; } // reuse the live servers
 
   await closeAll(cache?.clients); // enabled set changed — drop the old ones
   cache = null;
+  stopIdleTimer();
 
   const settled = await Promise.allSettled(servers.map((s) => connectOne(s)));
 
@@ -93,19 +122,23 @@ export async function connectTools(onLog = () => {}) {
     onLog(`[mcp] ${name}: ${mcpTools.length} tools\n`);
   });
 
-  cache = { sig, clients, tools, toolMap };
+  cache = { sig, clients, tools, toolMap, lastUsed: Date.now() };
+  touch(onLog);
   return cache;
 }
 
 /** Drop all cached connections (e.g. after a server misbehaves). */
 export async function resetTools() {
-  await closeAll(cache?.clients);
+  const clients = cache?.clients;
   cache = null;
+  stopIdleTimer();
+  await closeAll(clients);
 }
 
 export async function callTool(toolMap, fqn, argsJson) {
   const entry = toolMap.get(fqn);
   if (!entry) return { error: `unknown tool ${fqn}` };
+  touch(); // a long tool-using run must not be reaped mid-flight
   let args = {};
   try {
     args = argsJson ? JSON.parse(argsJson) : {};
