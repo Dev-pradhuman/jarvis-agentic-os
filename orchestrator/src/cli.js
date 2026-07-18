@@ -74,6 +74,12 @@ const DEFS = {
       return args;
     },
   },
+  // Gemini (v0.47+) reads a piped (non-TTY) stdin as the prompt and runs headless
+  // on its own — so we deliver the prompt on stdin like the other shim CLIs. The
+  // earlier bug was ALSO passing `-p`: Gemini then saw the stdin as a positional
+  // `query` AND the -p flag and bailed ("Cannot use both a positional prompt and
+  // the --prompt (-p) flag together"). Dropping -p fixes it. (It stays a shell
+  // spawn: `gemini` is an npm .cmd shim, not a real .exe, so shell:false ENOENTs.)
   gemini: {
     id: 'gemini',
     label: 'Gemini CLI',
@@ -89,8 +95,7 @@ const DEFS = {
       // yolo = auto-approve ALL tools (the "dangerously skip permissions" mode).
       const args = ['--approval-mode', 'yolo'];
       if (model) args.push('-m', model);
-      args.push('-p', 'Follow the instructions provided on standard input.');
-      return args;
+      return args; // prompt arrives on stdin; a piped stdin makes gemini headless
     },
   },
   codex: {
