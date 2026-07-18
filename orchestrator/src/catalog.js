@@ -27,7 +27,9 @@ export const BEST_MCPS = [
 // one-time auth (`npx -y mcp-remote <url>`) then enable them. `authUrl` is that URL.
 function remote(url) { return { command: 'npx', args: ['-y', 'mcp-remote', url], authUrl: url, needsAuth: true }; }
 export const INTEGRATION_MCPS = [
-  { name: 'composio-rube', ...remote('https://rube.app/mcp'), desc: 'Composio Rube — 500+ app integrations (Gmail, Slack, GitHub, Notion…)' },
+  // Composio retired the rube.app host (its DNS zone now publishes no A record),
+  // so the old URL fails with ENOTFOUND. connect.composio.dev is the live endpoint.
+  { name: 'composio-rube', ...remote('https://connect.composio.dev/mcp'), desc: 'Composio Rube — 500+ app integrations (Gmail, Slack, GitHub, Notion…)' },
   { name: 'cloudflare-observability', ...remote('https://observability.mcp.cloudflare.com/sse'), desc: 'Cloudflare Workers logs, errors, analytics' },
   { name: 'datadog', ...remote('https://mcp.datadoghq.com/api/unstable/mcp-server/mcp'), desc: 'Datadog metrics, logs, monitors, traces' },
   { name: 'sentry', ...remote('https://mcp.sentry.dev/mcp'), desc: 'Sentry issues, errors, releases (official)' },
