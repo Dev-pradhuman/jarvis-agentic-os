@@ -13,9 +13,20 @@ export const ROUTING_PROFILES = {
   Review: { preferred: 'claude', fallback: 'codex', reason: 'independent review' },
   Test: { preferred: 'codex', fallback: 'gemini', reason: 'execution and debugging' },
 };
+export const DEFAULT_PIPELINE = Object.fromEntries(STAGES.map((stage) => [stage, {
+  automated: true,
+  agent: ROUTING_PROFILES[stage].preferred,
+  effort: stage === 'Implement' ? 'high' : 'medium',
+}]));
+export function normalizePipeline(input = {}) {
+  return Object.fromEntries(STAGES.map((stage) => {
+    const base = DEFAULT_PIPELINE[stage]; const value = input[stage] || {};
+    return [stage, { automated: value.automated !== false, agent: String(value.agent || base.agent), effort: String(value.effort || base.effort) }];
+  }));
+}
 export function listMissions(folder = '') { return load().filter((x) => !folder || x.folder === folder).sort((a,b) => b.updatedAt - a.updatedAt); }
 export function getMission(id) { return load().find((x) => x.id === id) || null; }
-export function createMission({ title, folder = '', mode = 'manual' }) { const now = Date.now(); const item = { id: randomUUID(), title: String(title || '').trim(), folder, mode: mode === 'automatic' ? 'automatic' : 'manual', stage: 0, status: 'ready', history: [{ at: now, type: 'created', text: 'Mission created' }], createdAt: now, updatedAt: now }; if (!item.title) throw new Error('Mission title is required.'); const all = load(); all.push(item); save(all); return item; }
+export function createMission({ title, folder = '', mode = 'manual', pipeline }) { const now = Date.now(); const item = { id: randomUUID(), title: String(title || '').trim(), folder, mode: mode === 'automatic' ? 'automatic' : 'manual', pipeline: normalizePipeline(pipeline), stage: 0, status: 'ready', history: [{ at: now, type: 'created', text: 'Mission created' }], createdAt: now, updatedAt: now }; if (!item.title) throw new Error('Mission title is required.'); const all = load(); all.push(item); save(all); return item; }
 export function updateMission(id, patch = {}) { const all = load(); const item = all.find((x) => x.id === id); if (!item) throw new Error('Mission not found.'); Object.assign(item, patch, { updatedAt: Date.now() }); item.history.push({ at: Date.now(), type: patch.status || 'updated', text: patch.note || `Stage: ${STAGES[item.stage]}` }); save(all); return item; }
 
 /** Record a stage result and, in automatic mode, make the next stage ready. */
@@ -34,7 +45,8 @@ export function completeMissionStage(id, stageName, status, output = '') {
     const next = STAGES[item.stage + 1];
     item.stage += 1;
     item.status = 'ready';
-    item.history.push({ at: now, type: 'handoff', text: `${expectedStage} completed. Automatic handoff to ${next}. ${summary}`.trim() });
+    const autoNext = normalizePipeline(item.pipeline)[next].automated;
+    item.history.push({ at: now, type: 'handoff', text: `${expectedStage} completed. ${autoNext ? `Automatic handoff to ${next}.` : `${next} is set to manual.`} ${summary}`.trim() });
   } else if (item.mode === 'automatic') {
     item.status = 'done';
     item.history.push({ at: now, type: 'done', text: `Test passed. Mission completed. ${summary}`.trim() });
@@ -44,5 +56,5 @@ export function completeMissionStage(id, stageName, status, output = '') {
   }
   item.updatedAt = now;
   save(all);
-  return { mission: item, advanced: status === 'success' && item.mode === 'automatic' && item.status === 'ready' };
+  return { mission: item, advanced: status === 'success' && item.mode === 'automatic' && item.status === 'ready' && normalizePipeline(item.pipeline)[STAGES[item.stage]].automated };
 }

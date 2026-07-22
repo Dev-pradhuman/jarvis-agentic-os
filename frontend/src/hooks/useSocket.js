@@ -329,7 +329,7 @@ export function requestReviewEvidence(folder = '') { socket?.emit('operations_re
 export function requestApprovals() { socket?.emit('approval_request_list'); }
 export function decideApproval(id, approved) { socket?.emit('approval_decide', { id, approved }); }
 export function requestMissions(folder = '') { socket?.emit('mission_list_request', { folder }); }
-export function createMission(title, folder = '', mode = 'manual') { socket?.emit('mission_create', { title, folder, mode }); }
+export function createMission(title, folder = '', mode = 'manual', pipeline) { socket?.emit('mission_create', { title, folder, mode, pipeline }); }
 export function updateMission(id, patch, folder = '') { socket?.emit('mission_update', { id, patch, folder }); }
 
 // ── Control + memory + search ──

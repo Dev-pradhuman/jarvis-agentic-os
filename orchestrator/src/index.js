@@ -51,7 +51,7 @@ import { randomUUID } from 'node:crypto';
 import { localOrigins, projectPath } from './security.js';
 import { getHealth, getReviewEvidence } from './operations.js';
 import { decideApproval, listApprovals, requestApproval } from './approvals.js';
-import { ROUTING_PROFILES, completeMissionStage, createMission, getMission, listMissions, updateMission } from './missions.js';
+import { ROUTING_PROFILES, completeMissionStage, createMission, getMission, listMissions, normalizePipeline, updateMission } from './missions.js';
 import { capabilityAudit } from './capabilities.js';
 import { saveSetup, setupStatus } from './setup.js';
 
@@ -481,8 +481,10 @@ io.on('connection', (socket) => {
     const stages = ['Research', 'Plan', 'Implement', 'Review', 'Test'];
     const stageName = stages[mission.stage];
     const profile = ROUTING_PROFILES[stageName];
+    const stageConfig = normalizePipeline(mission.pipeline)[stageName];
+    if (!stageConfig.automated) return;
     const available = [...getRegistry().filter((item) => item.available).map((item) => item.id), ...listProviders().map((item) => `api:${item.id}`)];
-    const cliId = profile && (available.includes(profile.preferred) ? profile.preferred : available.includes(profile.fallback) ? profile.fallback : '');
+    const cliId = available.includes(stageConfig.agent) ? stageConfig.agent : profile && (available.includes(profile.preferred) ? profile.preferred : available.includes(profile.fallback) ? profile.fallback : '');
     if (!cliId) {
       updateMission(mission.id, { status: 'blocked', note: `Automatic handoff paused: no available agent for ${stageName}.` });
       io.emit('mission_list', listMissions(mission.folder || ''));
@@ -493,12 +495,12 @@ io.on('connection', (socket) => {
     const current = getMission(mission.id);
     const handoff = current?.history.slice(-3).map((item) => item.text).join('\n') || '';
     queueMicrotask(() => dispatchChat({
-      cliId, model: '', effort: stageName === 'Implement' ? 'high' : 'medium', folder: mission.folder,
+      cliId, model: '', effort: stageConfig.effort, folder: mission.folder,
       missionId: mission.id, missionStage: stageName, confirmedCoding: true,
       prompt: `[Mission: ${mission.title}] You own the ${stageName} stage. ${handoff ? `Continue from this verified handoff:\n${handoff}\n\n` : ''}Read the shared brain, do this stage, record decisions and hand off a concise result to the next stage.`,
     }));
   }
-  socket.on('mission_create', ({ title, folder, mode } = {}) => { try { const item = createMission({ title, folder, mode }); io.emit('mission_list', listMissions(folder)); socket.emit('mission_created', item); if (item.mode === 'automatic') launchAutomaticMissionStage(item); } catch (e) { socket.emit('mission_error', { error: e.message }); } });
+  socket.on('mission_create', ({ title, folder, mode, pipeline } = {}) => { try { const item = createMission({ title, folder, mode, pipeline }); io.emit('mission_list', listMissions(folder)); socket.emit('mission_created', item); if (item.mode === 'automatic') launchAutomaticMissionStage(item); } catch (e) { socket.emit('mission_error', { error: e.message }); } });
   socket.on('mission_update', ({ id, patch, folder } = {}) => { try { updateMission(id, patch); io.emit('mission_list', listMissions(folder)); } catch (e) { socket.emit('mission_error', { error: e.message }); } });
   socket.on('capability_audit_request', ({ folder } = {}) => socket.emit('capability_audit', capabilityAudit(folder)));
 
