@@ -1,7 +1,7 @@
 # Jarvis — Local-First Agentic OS Dashboard
 
 A terminal-inspired graphical + vocal layer over Claude Code and local automation.
-Everything runs on `localhost` except the outbound call to Anthropic (via the Claude Code CLI).
+Everything binds to loopback by default. It is intentionally powerful: agents can execute tools in the selected project, so do not expose the orchestrator port without adding authentication and a restrictive origin policy.
 
 ![Jarvis Command Center](docs/dashboard.png)
 
@@ -71,7 +71,7 @@ Frontend UI is ported from the Lovable "Jarvis Command Center" project
 
 The **All Chats** tab runs your real agent CLIs and shares one memory across them.
 
-- **CLIs** (auto-detected): Claude Code, OpenCode, Gemini, Codex (Antigravity shown
+- **CLIs** (auto-detected): Claude Code, 9Router-via-Claude, OpenCode, Gemini, Codex (Antigravity shown
   disabled until installed). Pick a CLI → model → effort, type a task, and it spawns
   the *real* CLI headlessly in the selected project folder and streams the output.
   - Effort maps to a native flag where supported (`claude --effort`,
@@ -107,3 +107,7 @@ to it, falling back to demo values only when the socket is offline.
 
 Note: token counts are estimated from real I/O byte counts (bytes/4), not the
 provider's exact usage meter. Calendar/directives are local files (no Google OAuth).
+
+## Recommended multi-agent workflow
+
+Every completed exchange is written to the shared Brain and injected into every future agent run for that project. Use the same active folder for a task, and assign roles deliberately: Claude for architecture/review, Codex for implementation and tests, Gemini for large-context exploration, and Perplexity through its API provider for web research. 9Router is separate from Claude Pro: select **9Router · Claude**, set `ROUTER9_API_KEY` in the orchestrator environment, and use its local dashboard key; the normal Claude tile continues to use your Claude Pro authentication. 9Router documents its local OpenAI-compatible endpoint as `http://127.0.0.1:20128/v1`.

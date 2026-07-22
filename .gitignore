@@ -19,6 +19,10 @@ ml/models/
 orchestrator/temp/*.json
 !orchestrator/temp/.gitkeep
 
+# graphify knowledge-graph output (regenerate with `graphify extract .`)
+graphify-out/
+.agents/
+
 # ML voices / weights (large, fetched separately)
 ml/voices/
 ml/*.bin

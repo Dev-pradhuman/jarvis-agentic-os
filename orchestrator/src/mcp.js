@@ -5,7 +5,7 @@
  * For API providers the orchestrator bridges tools at runtime (see providers.js).
  *
  * Registry file: {projectsRoot}/.jarvis-brain/mcp.json
- * Each server: { id, name, transport:'stdio'|'http', command, args[], env{}, url, enabled }
+ * Structure: { registry: [{ id, name, transport:'stdio'|'http', command, args[], env{}, url }], state: { [folder]: { [id]: boolean } } }
  *
  * Sync MERGES into existing configs — it never removes servers Jarvis doesn't own
  * (e.g. Gemini's filesystem, Codex's node_repl are preserved). Ownership is tracked
@@ -22,29 +22,51 @@ const HOME = os.homedir();
 
 function load() {
   try {
-    return JSON.parse(fs.readFileSync(STORE, 'utf8'));
+    const raw = JSON.parse(fs.readFileSync(STORE, 'utf8'));
+    if (Array.isArray(raw)) {
+      // Migrate old format
+      const state = { _default: {} };
+      raw.forEach(s => {
+        state._default[s.id] = s.enabled !== false;
+        delete s.enabled;
+      });
+      return { registry: raw, state };
+    }
+    return raw;
   } catch {
-    return [];
+    return { registry: [], state: {} };
   }
 }
-function save(list) {
+function save(data) {
   fs.mkdirSync(path.dirname(STORE), { recursive: true });
-  fs.writeFileSync(STORE, JSON.stringify(list, null, 2));
+  fs.writeFileSync(STORE, JSON.stringify(data, null, 2));
 }
 function slugify(s) {
   return String(s || 'mcp').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-export function listMcp() {
-  return load();
+function resolveState(state, id, folder) {
+  const projectState = folder ? state[folder] : undefined;
+  if (projectState && projectState[id] !== undefined) return projectState[id];
+  const defaultState = state['_default'];
+  if (defaultState && defaultState[id] !== undefined) return defaultState[id];
+  return true; // enabled by default
+}
+
+export function listMcp(folder) {
+  const data = load();
+  return data.registry.map(s => ({
+    ...s,
+    enabled: resolveState(data.state, s.id, folder)
+  }));
 }
 
 /**
  * Import an MCP server. Accepts either a stdio command line or an HTTP/SSE URL.
  * @param {{name, command?, args?, env?, url?, transport?}} spec
  */
-export function addMcp(spec) {
-  const list = load();
+export function addMcp(spec, folder) {
+  const data = load();
   const transport = spec.transport || (spec.url ? 'http' : 'stdio');
   const id = slugify(spec.name || spec.command || spec.url);
   const server = {
@@ -55,30 +77,42 @@ export function addMcp(spec) {
     command: spec.command || '',
     args: Array.isArray(spec.args) ? spec.args : parseArgs(spec.args),
     env: spec.env || {},
-    url: spec.url || '',
-    enabled: spec.enabled !== false,
+    url: spec.url || ''
   };
-  const next = list.filter((s) => s.id !== id);
-  next.push(server);
-  save(next);
+  
+  const nextRegistry = data.registry.filter((s) => s.id !== id);
+  nextRegistry.push(server);
+  data.registry = nextRegistry;
+  
+  const target = folder || '_default';
+  if (!data.state[target]) data.state[target] = {};
+  data.state[target][id] = spec.enabled !== false;
+
+  save(data);
   const report = syncAll();
   return { server, sync: report };
 }
 
-export function removeMcp(id) {
-  const list = load();
-  const server = list.find((s) => s.id === id);
-  save(list.filter((s) => s.id !== id));
-  // Remove this server's key from every CLI config we manage.
+export function removeMcp(id, folder) {
+  const data = load();
+  const server = data.registry.find((s) => s.id === id);
+  data.registry = data.registry.filter((s) => s.id !== id);
+  
+  for (const k of Object.keys(data.state)) {
+    if (data.state[k][id] !== undefined) delete data.state[k][id];
+  }
+  
+  save(data);
   if (server) purgeFromClis(server.name);
   return { removed: !!server, sync: syncAll() };
 }
 
-export function setEnabled(id, enabled) {
-  const list = load();
-  const s = list.find((x) => x.id === id);
-  if (s) s.enabled = enabled;
-  save(list);
+export function setEnabled(id, enabled, folder) {
+  const data = load();
+  const target = folder || '_default';
+  if (!data.state[target]) data.state[target] = {};
+  data.state[target][id] = !!enabled;
+  save(data);
   return { sync: syncAll() };
 }
 
@@ -107,14 +141,14 @@ const GEMINI_CFG = path.join(HOME, '.gemini', 'settings.json');
 const OPENCODE_CFG = path.join(HOME, '.config', 'opencode', 'opencode.json');
 const CODEX_CFG = path.join(HOME, '.codex', 'config.toml');
 
-const enabledServers = () => load().filter((s) => s.enabled);
+// Note: syncAll globally syncs MCPs that are enabled by default (globally).
+// Since CLIs are per-machine, we sync the `_default` enabled state.
+const enabledServers = () => load().registry.filter(s => resolveState(load().state, s.id, ''));
 
-/** Claude Code + Gemini share {command,args,env} / {httpUrl|type:http}. */
 function syncClaude() {
   const cfg = readJson(CLAUDE_CFG);
   cfg.mcpServers = cfg.mcpServers || {};
-  // drop our old entries, re-add
-  for (const s of load()) delete cfg.mcpServers[s.name];
+  for (const s of load().registry) delete cfg.mcpServers[s.name];
   for (const s of enabledServers()) {
     cfg.mcpServers[s.name] =
       s.transport === 'http'
@@ -128,7 +162,7 @@ function syncClaude() {
 function syncGemini() {
   const cfg = readJson(GEMINI_CFG);
   cfg.mcpServers = cfg.mcpServers || {};
-  for (const s of load()) delete cfg.mcpServers[s.name];
+  for (const s of load().registry) delete cfg.mcpServers[s.name];
   for (const s of enabledServers()) {
     cfg.mcpServers[s.name] =
       s.transport === 'http'
@@ -143,7 +177,7 @@ function syncOpenCode() {
   const cfg = readJson(OPENCODE_CFG);
   cfg.$schema = cfg.$schema || 'https://opencode.ai/config.json';
   cfg.mcp = cfg.mcp || {};
-  for (const s of load()) delete cfg.mcp[s.name];
+  for (const s of load().registry) delete cfg.mcp[s.name];
   for (const s of enabledServers()) {
     cfg.mcp[s.name] =
       s.transport === 'http'
@@ -154,7 +188,6 @@ function syncOpenCode() {
   return OPENCODE_CFG;
 }
 
-/** Codex is TOML — do a marked-block merge so existing servers are preserved. */
 function syncCodex() {
   let text = '';
   try {
@@ -164,12 +197,15 @@ function syncCodex() {
   }
   const START = '# >>> jarvis-managed mcp (do not edit) >>>';
   const END = '# <<< jarvis-managed mcp <<<';
-  // strip previous managed block
-  const re = new RegExp(`\\n?${START}[\\s\\S]*?${END}\\n?`, 'g');
+  // The markers contain regex metacharacters — notably the parens in "(do not edit)",
+  // which would otherwise be parsed as a capture group and never match the literal
+  // text, so every sync would append a fresh block instead of replacing the old one.
+  const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`\\n?${escRe(START)}[\\s\\S]*?${escRe(END)}\\n?`, 'g');
   text = text.replace(re, '');
 
   const blocks = enabledServers()
-    .filter((s) => s.transport === 'stdio') // codex mcp = stdio
+    .filter((s) => s.transport === 'stdio')
     .map((s) => {
       const args = JSON.stringify(s.args);
       let b = `\n[mcp_servers.${s.name}]\ncommand = ${JSON.stringify(s.command)}\nargs = ${args}\n`;
@@ -188,7 +224,6 @@ function syncCodex() {
   return CODEX_CFG;
 }
 
-/** Remove a server key from every managed config (used on delete). */
 function purgeFromClis(name) {
   for (const [p, key] of [
     [CLAUDE_CFG, 'mcpServers'],
@@ -201,10 +236,9 @@ function purgeFromClis(name) {
       writeJson(p, cfg);
     }
   }
-  syncCodex(); // rewrites managed block without the removed server
+  syncCodex();
 }
 
-/** Regenerate every CLI's config from the registry. */
 export function syncAll() {
   const out = {};
   try { out.claude = syncClaude(); } catch (e) { out.claudeError = e.message; }
@@ -214,12 +248,10 @@ export function syncAll() {
   return out;
 }
 
-/** Enabled servers, for the API tool-bridge + brain awareness. */
 export function enabledForBridge() {
   return enabledServers();
 }
 
-/** One-line catalog string for injecting into the brain context. */
 export function mcpCatalog() {
   const s = enabledServers();
   if (!s.length) return '';

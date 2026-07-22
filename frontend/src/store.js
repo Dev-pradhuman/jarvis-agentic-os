@@ -46,6 +46,10 @@ export const useJarvisStore = create((set) => ({
   // ---- Skills dashboard (real SOP files) ----
   skills: [], // [{id,label,enabled,registered,bytes,updated,preview}]
   setSkills: (skills) => set({ skills }),
+  plugins: [], // custom Jarvis plugins [{id,label,enabled}]
+  setPlugins: (plugins) => set({ plugins }),
+  claudePlugins: [], // Claude Code plugins made portable [{id,label,description,counts,activated,enabled}]
+  setClaudePlugins: (claudePlugins) => set({ claudePlugins }),
   skillContent: null, // { id, content } for the editor
   setSkillContent: (skillContent) => set({ skillContent }),
 
@@ -53,15 +57,52 @@ export const useJarvisStore = create((set) => ({
   usage: null, // { agents:[...], totals:{...}, live:{...} }
   setUsage: (usage) => set({ usage }),
 
+  // ---- Operations workspace: live orchestration data ----
+  agentActivity: [],
+  setAgentActivity: (agentActivity) => set({ agentActivity }),
+  missions: [],
+  setMissions: (missions) => set({ missions }),
+  addMission: (mission) => set((s) => ({ missions: [mission, ...s.missions].slice(0, 30) })),
+  updateMission: (id, patch) => set((s) => ({ missions: s.missions.map((m) => m.id === id ? { ...m, ...patch } : m) })),
+  operationsHealth: null,
+  setOperationsHealth: (operationsHealth) => set({ operationsHealth }),
+  reviewEvidence: null,
+  setReviewEvidence: (reviewEvidence) => set({ reviewEvidence }),
+  approvals: [],
+  setApprovals: (approvals) => set({ approvals }),
+  routingProfiles: {},
+  setRoutingProfiles: (routingProfiles) => set({ routingProfiles }),
+
   // ---- Multi-CLI chat + brain ----
-  clis: [], // [{id,label,available,models,efforts,nativeEffort}]
+  clis: [], // [{id,label,available,models,efforts,nativeEffort,setupCmd}]
   setClis: (clis) => set({ clis }),
+  cliCommands: {}, // { [cliId]: "terminal command" } — one-click editable per CLI
+  setCliCommands: (cliCommands) => set({ cliCommands }),
   projectsRoot: '',
   vaultPath: '', // .jarvis-brain Obsidian vault path
   folders: [], // subfolders of the projects root (sub-brains)
   setFolders: ({ root, vault, folders }) => set({ projectsRoot: root, vaultPath: vault || '', folders }),
   activeFolder: SAVED.activeFolder || '', // '' = main brain
   setActiveFolder: (activeFolder) => set({ activeFolder }),
+  projectStats: null,
+  setProjectStats: (projectStats) => set({ projectStats }),
+  terminalConnected: false,
+  setTerminalConnected: (terminalConnected) => set({ terminalConnected }),
+
+  roles: null, // { enhancer: {kind, id, model, effort}, coder: {kind, id, model, effort} }
+  setRoles: (roles) => set({ roles }),
+
+  ruflow: null, // { enabled, globalEnabled, folder, files:{activeContext,decisions,patterns,progress} }
+  setRuflow: (ruflow) => set({ ruflow }),
+
+  // ---- Toasts — surface backend error/success events that were being swallowed ----
+  toasts: [], // [{id, kind:'error'|'success', title, message}]
+  pushToast: (kind, title, message) => {
+    const id = Date.now() + Math.random();
+    set((s) => ({ toasts: [...s.toasts, { id, kind, title, message }].slice(-4) }));
+    setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), kind === 'error' ? 8000 : 4000);
+  },
+  dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
   chatSessions: [], // live sessions this UI session (streaming)
   startChatSession: (meta) =>

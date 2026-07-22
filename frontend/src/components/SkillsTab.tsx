@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { FileCode2, Pencil, Play, Plus, Power, Save, Trash2, X, Zap } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { FileCode2, Pencil, Play, Plus, Power, Save, Search, Trash2, X, Zap } from "lucide-react";
 import { useJarvisStore } from "../store";
 import { deleteSkill, readSkill, requestSkills, saveSkill, sendSkill, toggleSkill } from "../hooks/useSocket";
+import { SkeletonGrid } from "./ui";
 
 function relTime(ms?: number) {
   if (!ms) return "";
@@ -13,36 +14,69 @@ function relTime(ms?: number) {
 }
 
 export function SkillsTab() {
+  const activeFolder = useJarvisStore((s) => s.activeFolder);
   const skills = useJarvisStore((s) => s.skills);
+  const connected = useJarvisStore((s) => s.connected);
   const activeSkills = useJarvisStore((s) => s.activeSkills);
+  const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<"all" | "enabled" | "disabled">("all");
 
-  useEffect(() => { requestSkills(); }, []);
+  useEffect(() => { requestSkills(activeFolder); }, [activeFolder]);
+  // Distinguish "still loading" from a genuinely empty list, so we don't flash
+  // "no skills" at the user while the socket round-trip is still in flight.
+  useEffect(() => { if (skills.length) setLoaded(true); }, [skills.length]);
+  const loading = !loaded && skills.length === 0 && connected !== false;
 
   const runState = (id: string) => activeSkills.find((s: any) => s.skillId === id);
+
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return skills.filter((s: any) => {
+      if (filter === "enabled" && !s.enabled) return false;
+      if (filter === "disabled" && s.enabled) return false;
+      if (needle && !`${s.label} ${s.id} ${s.preview || ""}`.toLowerCase().includes(needle)) return false;
+      return true;
+    });
+  }, [skills, q, filter]);
 
   return (
     <div className="h-full w-full overflow-y-auto p-4" style={{ scrollbarWidth: "none" }}>
       <div className="flex items-center gap-2 mb-4">
         <Zap className="h-4 w-4" style={{ color: "#8b5cf6" }} />
         <h2 className="font-mono text-[12px] tracking-[0.25em] uppercase text-white/90">Skills</h2>
-        <span className="font-mono text-[10px] text-muted-foreground">{skills.length} SOPs · real files in the vault</span>
-        <button onClick={() => setEditing("__new__")}
-          className="ml-auto font-mono text-[11px] px-2.5 py-1.5 rounded-lg border border-dashed flex items-center gap-1"
-          style={{ color: "#8b5cf6", borderColor: "#8b5cf655" }}>
-          <Plus className="h-3 w-3" /> New skill
-        </button>
+        <span className="font-mono text-[10px] text-muted-foreground">{shown.length}/{skills.length} SOPs · real files in the vault</span>
+        <div className="ml-auto flex items-center gap-2">
+          <div className="flex items-center gap-1.5 bg-white/[0.03] border border-white/[0.08] rounded-md px-2 py-1">
+            <Search className="h-3 w-3 text-muted-foreground" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="filter…"
+              className="w-28 bg-transparent font-mono text-[10px] text-white/90 outline-none" />
+          </div>
+          {(["all", "enabled", "disabled"] as const).map((f) => (
+            <button key={f} onClick={() => setFilter(f)} className="font-mono text-[9px] px-2 py-1 rounded-md border capitalize"
+              style={{ color: filter === f ? "#8b5cf6" : "#c9c9cc", borderColor: filter === f ? "#8b5cf666" : "rgba(255,255,255,0.08)" }}>{f}</button>
+          ))}
+          <button onClick={() => setEditing("__new__")}
+            className="font-mono text-[11px] px-2.5 py-1.5 rounded-lg border border-dashed flex items-center gap-1"
+            style={{ color: "#8b5cf6", borderColor: "#8b5cf655" }}>
+            <Plus className="h-3 w-3" /> New skill
+          </button>
+        </div>
       </div>
 
+      {loading && <SkeletonGrid count={6} minWidth={300} />}
+
+      {!loading && (
       <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
-        {skills.map((s: any) => {
+        {shown.map((s: any) => {
           const rs = runState(s.id);
           return (
             <div key={s.id} className="glass-panel p-4 flex flex-col gap-2" style={{ opacity: s.enabled ? 1 : 0.55 }}>
               <div className="flex items-center gap-2">
                 <FileCode2 className="h-4 w-4 shrink-0" style={{ color: s.enabled ? "#a78bfa" : "#666" }} />
                 <div className="font-sans text-[13px] text-white/90 truncate">{s.label}</div>
-                <button onClick={() => toggleSkill(s.id, !s.enabled)} className="ml-auto grid place-items-center h-6 w-6 rounded hover:bg-white/[0.05]" title={s.enabled ? "Disable" : "Enable"}>
+                <button onClick={() => toggleSkill(s.id, !s.enabled, activeFolder)} className="ml-auto grid place-items-center h-6 w-6 rounded hover:bg-white/[0.05]" title={s.enabled ? "Disable" : "Enable"}>
                   <Power className="h-3.5 w-3.5" style={{ color: s.enabled ? "#10b981" : "#666" }} />
                 </button>
               </div>
@@ -64,7 +98,7 @@ export function SkillsTab() {
                   className="flex items-center gap-1 font-mono text-[10px] px-2 py-1 rounded-md border border-white/[0.08] text-white/70">
                   <Pencil className="h-3 w-3" /> Edit
                 </button>
-                <button onClick={() => { if (confirm(`Delete skill ${s.id}? This removes the SOP file.`)) deleteSkill(s.id); }}
+                <button onClick={() => { if (confirm(`Delete skill ${s.id}? This removes the SOP file.`)) deleteSkill(s.id, activeFolder); }}
                   className="ml-auto grid place-items-center h-6 w-6 rounded hover:bg-white/[0.05]" title="Delete SOP">
                   <Trash2 className="h-3 w-3 text-muted-foreground" />
                 </button>
@@ -73,14 +107,16 @@ export function SkillsTab() {
           );
         })}
         {skills.length === 0 && <div className="text-muted-foreground font-mono text-[12px]">No skills found in the vault.</div>}
+        {skills.length > 0 && shown.length === 0 && <div className="text-muted-foreground font-mono text-[12px]">No skills match the filter.</div>}
       </div>
+      )}
 
-      {editing && <SkillEditor id={editing} onClose={() => setEditing(null)} />}
+      {editing && <SkillEditor id={editing} folder={activeFolder} onClose={() => setEditing(null)} />}
     </div>
   );
 }
 
-function SkillEditor({ id, onClose }: { id: string; onClose: () => void }) {
+function SkillEditor({ id, folder, onClose }: { id: string; folder: string; onClose: () => void }) {
   const isNew = id === "__new__";
   const skillContent = useJarvisStore((s) => s.skillContent);
   const setSkillContent = useJarvisStore((s) => s.setSkillContent);
@@ -99,7 +135,7 @@ function SkillEditor({ id, onClose }: { id: string; onClose: () => void }) {
   function save() {
     const finalId = skillId.trim();
     if (!finalId) return;
-    saveSkill(finalId, content);
+    saveSkill(finalId, content, folder);
     onClose();
   }
 

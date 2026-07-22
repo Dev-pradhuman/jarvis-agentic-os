@@ -10,42 +10,88 @@
  */
 
 import 'dotenv/config';
+import fs from 'node:fs';
 import http from 'node:http';
 import cors from 'cors';
 import express from 'express';
 import { Server } from 'socket.io';
+import os from 'node:os';
+import pty from 'node-pty';
+
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+  fs.writeFileSync('crash.log', String(err.stack || err) + '\n', { flag: 'a' });
+});
+process.on('unhandledRejection', (err) => {
+  console.error('UNHANDLED REJECTION:', err);
+  fs.writeFileSync('crash.log', String(err.stack || err) + '\n', { flag: 'a' });
+});
 
 import { route } from './router.js';
 import { runSkill } from './skillRunner.js';
 import { SKILLS, UI_INTENTS } from './skills.js';
-import { getState, recordTokens, sampleTokens } from './state.js';
-import { getCli, getRegistry } from './cli.js';
+import { getState, recordTokens, sampleTokens, getProjectDashboard } from './state.js';
+import { getCli, getRegistry, getCliCommand, getCliCommands, setCliCommand } from './cli.js';
+import { spawn } from 'node:child_process';
 import { killProcessTree, runCli } from './cliRunner.js';
 import { addProvider, API_TYPES, listProviders, modelsForProvider, removeProvider, runApiChat, updateProvider } from './providers.js';
-import { addMcp, listMcp, mcpCatalog, removeMcp, setEnabled, syncAll } from './mcp.js';
-import { appendChat, appendNote, ensureBrain, generateAllSubBrains, getContext, listChats, listFolders, ROOT, searchBrain, VAULT_PATH } from './brain.js';
+import { getProjectStats } from './projectStats.js';
+import { addMcp, listMcp, removeMcp, setEnabled as setMcpEnabled, syncAll } from './mcp.js';
+import { listPlugins, addPlugin, removePlugin, setEnabled as setPluginEnabled } from './plugins.js';
+import { listClaudePlugins, activateClaudePlugin, deactivateClaudePlugin, toggleClaudePlugin, scaffoldLocalPlugin, localPluginsDir } from './claudePlugins.js';
+import { getRoles, setRole } from './roles.js';
+import { isRuflowEnabled, setRuflowEnabled, getRuflowState, writeMemoryBank } from './ruflow.js';
+import { seedBest, seedExtras, getCatalog } from './catalog.js';
+import { enhancePrompt } from './promptEnhancer.js';
+import { analyzeFolder, appendChat, appendNote, ensureBrain, generateAllSubBrains, getContext, listChats, listFolders, ROOT, searchBrain, VAULT_PATH } from './brain.js';
 import { deleteSkill, isSkillEnabled, listSkills, readSkill, saveSkill, setSkillEnabled } from './skillsManager.js';
 import { getUsage } from './usage.js';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { localOrigins, projectPath } from './security.js';
+import { getHealth, getReviewEvidence } from './operations.js';
+import { decideApproval, listApprovals, requestApproval } from './approvals.js';
+import { ROUTING_PROFILES, createMission, listMissions, updateMission } from './missions.js';
+import { capabilityAudit } from './capabilities.js';
+import { saveSetup, setupStatus } from './setup.js';
 
 const PORT = Number(process.env.PORT || 3030);
+const HOST = process.env.JARVIS_HOST || '127.0.0.1';
+const ALLOWED_ORIGINS = localOrigins();
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json());
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'orchestrator' }));
+app.get('/setup/status', (_req, res) => res.json(setupStatus()));
+app.post('/setup', (req, res) => { try { res.json(saveSetup(req.body || {})); } catch (e) { res.status(400).json({ error: e.message }); } });
 app.get('/skills', (_req, res) => res.json(Object.values(SKILLS)));
 app.get('/state', (_req, res) => res.json(getState(running)));
 app.get('/clis', (_req, res) => res.json(getRegistry()));
 app.get('/folders', (_req, res) => res.json({ root: ROOT, vault: VAULT_PATH, folders: listFolders() }));
+app.get('/project-stats', (req, res) => {
+  const folder = req.query.folder;
+  if (!folder) return res.json(null);
+  let fullPath;
+  try { fullPath = projectPath(ROOT, folder); } catch { return res.status(400).json({ error: 'Invalid folder' }); }
+  res.json({
+    ...getProjectStats(fullPath),
+    dashboard: getProjectDashboard(folder)
+  });
+});
 app.get('/providers', (_req, res) => res.json(listProviders()));
 app.get('/provider-types', (_req, res) => res.json(API_TYPES));
 app.get('/skills-manage', (_req, res) => res.json(listSkills()));
 app.get('/usage', (_req, res) => res.json(getUsage(running)));
 app.get('/search', (req, res) => res.json({ query: req.query.q || '', results: searchBrain(req.query.q || '') }));
 app.get('/mcp', (_req, res) => res.json(listMcp()));
+app.get('/operations/approvals', (_req, res) => res.json(listApprovals()));
+app.get('/operations/missions', (req, res) => res.json(listMissions(req.query.folder || '')));
+app.get('/operations/routing', (_req, res) => res.json(ROUTING_PROFILES));
+app.get('/operations/capabilities', (req, res) => res.json(capabilityAudit(req.query.folder || '')));
+app.get('/operations/health', async (_req, res) => res.json(await getHealth(getRegistry(), listProviders(), listMcp())));
+app.get('/operations/review', (req, res) => { try { res.json(getReviewEvidence(ROOT, req.query.folder || '')); } catch (e) { res.status(400).json({ error: e.message }); } });
 app.post('/mcp', (req, res) => {
   try {
     const result = addMcp(req.body || {});
@@ -79,12 +125,21 @@ try {
 }
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, { cors: { origin: ALLOWED_ORIGINS } });
 
 let running = 0; // skills + chats currently executing (drives the AGENTS vital)
 
 // ── Active-run registry — lets Stop / kill-switch halt in-flight work ──
 const activeRuns = new Map(); // chatId -> { kind:'proc'|'api', proc?, controller?, cliId }
+const taskBoard = new Map(); // concise task declarations injected into sibling runs
+
+function coordinationContext(exceptId) {
+  const active = [...taskBoard.entries()].filter(([id]) => id !== exceptId).map(([, task]) =>
+    `- ${task.cli} on ${task.folder || 'root'}: ${task.prompt}`);
+  return active.length ? `\n\n===== ACTIVE AGENT COORDINATION =====\nOther agents are currently working on:\n${active.join('\n')}\nAvoid duplicating their work; review or extend it instead.\n===== END ACTIVE COORDINATION =====` : '';
+}
+
+function broadcastTaskBoard() { io.emit('agent_activity', [...taskBoard.values()]); }
 const activeSkillProcs = new Map(); // skillRunId -> child process
 const stoppedIds = new Set(); // ids the user explicitly stopped (→ status 'stopped')
 
@@ -108,6 +163,35 @@ function stopAll() {
     n += 1;
   }
   return n;
+}
+
+/**
+ * Open a REAL, visible terminal window running `command`, kept open afterwards so
+ * interactive flows (e.g. `codex login`, a CLI's device-auth prompt) work — the
+ * captured-pipe chat path can't do that. Runs in the selected project folder.
+ * Windows: `cmd /c start "<title>" cmd /k "<command>"`. POSIX best-effort fallback.
+ */
+function openTerminal(command, cwd, title = 'Jarvis') {
+  if (!command || !command.trim()) throw new Error('empty command');
+  if (process.platform === 'win32') {
+    const child = spawn('cmd.exe', ['/c', 'start', title, 'cmd', '/k', command], {
+      cwd,
+      windowsHide: false,
+      detached: true,
+    });
+    child.on('error', () => {});
+    child.unref();
+  } else {
+    // Best-effort: try a few common terminals, then fall back to a detached shell.
+    const term = process.env.TERMINAL || 'x-terminal-emulator';
+    try {
+      const child = spawn(term, ['-e', `bash -lc '${command}; exec bash'`], { cwd, detached: true });
+      child.on('error', () => {});
+      child.unref();
+    } catch {
+      spawn('bash', ['-lc', command], { cwd, detached: true }).unref();
+    }
+  }
 }
 
 const TRANSIENT_RE = /timeout|econnreset|socket hang|network|temporarily|rate.?limit|\b429\b|\b5\d\d\b/i;
@@ -177,6 +261,14 @@ async function executeSkill(skill, parameters) {
   });
   io.emit('state_update', getState(running));
   io.emit('usage_update', getUsage(running));
+
+  const reqRegex = /```jarvis:request-resource\s+({[\s\S]*?})\s+```/g;
+  let match;
+  while ((match = reqRegex.exec(result.output)) !== null) {
+    try {
+      io.emit('resource_requested', JSON.parse(match[1]));
+    } catch (e) {}
+  }
 }
 
 io.on('connection', (socket) => {
@@ -189,26 +281,205 @@ io.on('connection', (socket) => {
   socket.emit('mcp_list', listMcp());
   socket.emit('skills_list', listSkills());
   socket.emit('usage_update', getUsage(running));
+  socket.emit('agent_activity', [...taskBoard.values()]);
+  socket.emit('approval_list', listApprovals());
+  socket.emit('mission_list', listMissions());
+  socket.emit('routing_profiles', ROUTING_PROFILES);
+  socket.emit('capability_audit', capabilityAudit());
+  getHealth(getRegistry(), listProviders(), listMcp()).then((health) => socket.emit('operations_health', health));
 
   // ── Skills dashboard — CRUD over the real SOP files on disk. A disabled skill
   // is refused at execution time, so the toggle genuinely stops it running. ──
-  socket.on('skills_request', () => socket.emit('skills_list', listSkills()));
+  // Re-scan a project and refresh its sub-brain brief on demand. New projects are
+  // analyzed automatically the first time they're seen (generateAllSubBrains), so
+  // this is the manual "the project changed shape, re-read it" button.
+  socket.on('analyze_folder', ({ folder } = {}) => {
+    try {
+      const res = analyzeFolder(folder || '');
+      socket.emit('folder_analyzed', { folder: folder || '', ...res });
+    } catch (e) {
+      socket.emit('analyze_error', { folder: folder || '', message: e.message });
+    }
+  });
+
+  socket.on('skills_request', ({ folder } = {}) => socket.emit('skills_list', listSkills(folder)));
   socket.on('skill_read', ({ id }) => socket.emit('skill_content', { id, content: readSkill(id) }));
-  socket.on('skill_toggle', ({ id, enabled }) => {
-    setSkillEnabled(id, enabled);
-    io.emit('skills_list', listSkills());
+  socket.on('skill_toggle', ({ id, enabled, folder }) => {
+    setSkillEnabled(id, enabled, folder);
+    io.emit('skills_list', listSkills(folder));
   });
-  socket.on('skill_save', ({ id, content }) => {
-    saveSkill(id, content);
-    io.emit('skills_list', listSkills());
+  socket.on('skill_save', ({ id, content, folder }) => {
+    saveSkill(id, content, folder);
+    io.emit('skills_list', listSkills(folder));
   });
-  socket.on('skill_delete', ({ id }) => {
-    deleteSkill(id);
-    io.emit('skills_list', listSkills());
+  socket.on('skill_delete', ({ id, folder }) => {
+    deleteSkill(id, folder);
+    io.emit('skills_list', listSkills(folder));
   });
+
+  socket.on('enhance_prompt', async ({ reqId, cliId, folder, prompt }) => {
+    const result = await enhancePrompt({ raw: prompt, cliId, folder, brainContext: getContext(folder) });
+    socket.emit('prompt_enhanced', { reqId, result });
+  });
+
+  socket.on('get_roles', ({ folder } = {}) => {
+    try {
+      socket.emit('roles_state', {
+        roles: getRoles(folder),
+        registry: getRegistry(),
+        providers: listProviders()
+      });
+    } catch (e) {
+      console.error('[roles] get_roles error', e);
+    }
+  });
+
+  socket.on('set_role', ({ role, config, folder }) => {
+    try {
+      setRole(role, config, folder);
+      io.emit('roles_updated', {
+        roles: getRoles(folder),
+        registry: getRegistry(),
+        providers: listProviders(),
+        folder
+      });
+    } catch (e) {
+      socket.emit('roles_error', { error: e.message });
+    }
+  });
+
+  socket.on('clear_roles_override', ({ folder }) => {
+    import('node:fs').then(fs => {
+      import('node:path').then(path => {
+        try {
+          if (!folder) return;
+          const file = path.join(process.env.JARVIS_PROJECTS_ROOT || 'C:\\Users\\Pradhuman\\projects', '.jarvis-brain', 'folders', folder, 'roles.json');
+          if (fs.existsSync(file)) fs.unlinkSync(file);
+          io.emit('roles_updated', {
+            roles: getRoles(folder),
+            registry: getRegistry(),
+            providers: listProviders(),
+            folder
+          });
+        } catch(e) {
+          console.error('[roles] clear_roles_override error', e);
+        }
+      }).catch(e => console.error(e));
+    }).catch(e => console.error(e));
+  });
+
+  // ── Curated "best of" catalog — one-click seed the top MCPs + skills. ──
+  socket.on('catalog_get', () => socket.emit('catalog_list', getCatalog()));
+  socket.on('seed_best', ({ folder, extras } = {}) => {
+    const base = seedBest(folder);
+    const ex = extras === false ? { mcps: 0, skills: 0 } : seedExtras(folder);
+    const counts = { mcps: base.mcps + ex.mcps, skills: base.skills + ex.skills };
+    io.emit('mcp_list', listMcp(folder));
+    io.emit('skills_list', listSkills(folder));
+    socket.emit('seed_best_done', counts);
+    io.emit('terminal_log', `[jarvis] seeded ${counts.mcps} MCPs + ${counts.skills} skills → ${folder || 'all projects'}\n`);
+  });
+
+  // ── Ruflow — token-lean mode + per-project memory bank. ──
+  socket.on('ruflow_get', ({ folder } = {}) => socket.emit('ruflow_state', getRuflowState(folder)));
+  socket.on('ruflow_set', ({ enabled, folder } = {}) => {
+    const state = setRuflowEnabled(enabled, folder);
+    io.emit('ruflow_state', state);
+    io.emit('terminal_log', `[jarvis] ruflow ${enabled ? 'ON' : 'off'} for ${folder || 'all projects'}\n`);
+  });
+  socket.on('ruflow_memory_save', ({ folder, section, content } = {}) => {
+    try {
+      socket.emit('ruflow_state', writeMemoryBank(folder, section, content));
+    } catch (e) {
+      socket.emit('ruflow_error', { error: e.message });
+    }
+  });
+
+  // ── One-click CLI terminal commands (editable per CLI). ──
+  socket.on('cli_commands_request', () => socket.emit('cli_commands', getCliCommands()));
+  socket.on('cli_command_set', ({ cliId, command }) => {
+    try {
+      const commands = setCliCommand(cliId, command);
+      io.emit('cli_commands', commands);
+      io.emit('cli_list', getRegistry()); // registry carries setupCmd too
+    } catch (e) {
+      socket.emit('cli_command_error', { error: e.message });
+    }
+  });
+  // Open a real console window running the CLI's command (or an explicit override).
+  socket.on('open_terminal', ({ cliId, command, folder } = {}) => {
+    try {
+      const cmd = (command && command.trim()) || getCliCommand(cliId);
+      if (!cmd) throw new Error(`no command for ${cliId}`);
+      const approval = requestApproval('terminal', { cliId, command: cmd }, folder || '');
+      io.emit('approval_list', listApprovals());
+      socket.emit('approval_requested', approval);
+    } catch (e) {
+      socket.emit('cli_command_error', { error: e.message });
+    }
+  });
+
+  socket.on('plugins_request', ({ folder } = {}) => socket.emit('plugins_list', listPlugins(folder)));
+  socket.on('plugin_add', ({ spec, folder }) => {
+    addPlugin(spec, folder);
+    io.emit('plugins_list', listPlugins(folder));
+  });
+  socket.on('plugin_remove', ({ id, folder }) => {
+    removePlugin(id, folder);
+    io.emit('plugins_list', listPlugins(folder));
+  });
+  socket.on('plugin_toggle', ({ id, enabled, folder }) => {
+    setPluginEnabled(id, enabled, folder);
+    io.emit('plugins_list', listPlugins(folder));
+  });
+
+  // ── Claude Code plugin parity — make CC plugins usable by every CLI + API. ──
+  socket.on('claude_plugins_request', ({ folder } = {}) => {
+    socket.emit('claude_plugins_list', { folder: folder || '', plugins: listClaudePlugins(folder) });
+  });
+  socket.on('claude_plugin_activate', ({ id, folder } = {}) => {
+    try {
+      const r = activateClaudePlugin(id, folder);
+      io.emit('claude_plugins_list', { folder: folder || '', plugins: listClaudePlugins(folder) });
+      io.emit('mcp_list', listMcp(folder));
+      io.emit('skills_list', listSkills(folder));
+      io.emit('terminal_log', `[jarvis] plugin '${id}' activated → +${r.added.mcps.length} MCP, +${r.added.skills.length} skills (all CLIs + APIs)\n`);
+    } catch (e) {
+      socket.emit('claude_plugin_error', { error: e.message });
+    }
+  });
+  socket.on('claude_plugin_deactivate', ({ id, folder } = {}) => {
+    const r = deactivateClaudePlugin(id, folder);
+    io.emit('claude_plugins_list', { folder: folder || '', plugins: listClaudePlugins(folder) });
+    io.emit('mcp_list', listMcp(folder));
+    io.emit('skills_list', listSkills(folder));
+    io.emit('terminal_log', `[jarvis] plugin '${id}' deactivated → -${r.removed.mcps} MCP, -${r.removed.skills} skills\n`);
+  });
+  socket.on('claude_plugin_toggle', ({ id, enabled, folder } = {}) => {
+    toggleClaudePlugin(id, enabled, folder);
+    io.emit('claude_plugins_list', { folder: folder || '', plugins: listClaudePlugins(folder) });
+  });
+  // Scaffold one of YOUR plugins — same format, same activate path, every CLI + API.
+  socket.on('claude_plugin_scaffold', ({ name, folder } = {}) => {
+    try {
+      const { id, dir } = scaffoldLocalPlugin(name);
+      io.emit('claude_plugins_list', { folder: folder || '', plugins: listClaudePlugins(folder) });
+      socket.emit('plugin_scaffolded', { id, dir });
+      io.emit('terminal_log', `[jarvis] scaffolded plugin '${id}' → ${dir}\n`);
+    } catch (e) {
+      socket.emit('claude_plugin_error', { error: e.message });
+    }
+  });
+  socket.on('local_plugins_dir', () => socket.emit('local_plugins_dir_result', { dir: localPluginsDir() }));
 
   // ── Usage analytics — aggregated from the brain chat log + live telemetry. ──
   socket.on('usage_request', () => socket.emit('usage_update', getUsage(running)));
+  socket.on('operations_health_request', async () => socket.emit('operations_health', await getHealth(getRegistry(), listProviders(), listMcp())));
+  socket.on('operations_review_request', ({ folder } = {}) => { try { socket.emit('operations_review', getReviewEvidence(ROOT, folder)); } catch (e) { socket.emit('operations_review', { available: false, error: e.message }); } });
+  socket.on('mission_list_request', ({ folder } = {}) => socket.emit('mission_list', listMissions(folder)));
+  socket.on('mission_create', ({ title, folder } = {}) => { try { const item = createMission({ title, folder }); io.emit('mission_list', listMissions(folder)); socket.emit('mission_created', item); } catch (e) { socket.emit('mission_error', { error: e.message }); } });
+  socket.on('mission_update', ({ id, patch, folder } = {}) => { try { updateMission(id, patch); io.emit('mission_list', listMissions(folder)); } catch (e) { socket.emit('mission_error', { error: e.message }); } });
+  socket.on('capability_audit_request', ({ folder } = {}) => socket.emit('capability_audit', capabilityAudit(folder)));
 
   // ── Control: stop a single run, or the emergency kill-switch for everything. ──
   socket.on('chat_stop', ({ chatId }) => {
@@ -238,24 +509,35 @@ io.on('connection', (socket) => {
 
   // ── MCP servers — import once, generate every CLI's native config, and bridge
   // tools into API providers at runtime. Shared by all agents. ──
-  socket.on('mcp_add', ({ name, command, args, env, url, transport }) => {
+  socket.on('mcp_add', ({ name, command, args, env, url, transport, folder }) => {
     try {
-      const result = addMcp({ name, command, args, env, url, transport });
-      io.emit('mcp_list', listMcp());
-      socket.emit('mcp_added', result);
+      const approval = requestApproval('mcp', { name, command, args, env, url, transport }, folder || '');
+      io.emit('approval_list', listApprovals());
+      socket.emit('approval_requested', approval);
     } catch (e) {
       socket.emit('mcp_error', { error: e.message });
     }
   });
-  socket.on('mcp_remove', ({ id }) => {
-    removeMcp(id);
-    io.emit('mcp_list', listMcp());
+  socket.on('mcp_remove', ({ id, folder }) => {
+    removeMcp(id, folder);
+    io.emit('mcp_list', listMcp(folder));
   });
-  socket.on('mcp_toggle', ({ id, enabled }) => {
-    setEnabled(id, enabled);
-    io.emit('mcp_list', listMcp());
+  socket.on('mcp_toggle', ({ id, enabled, folder }) => {
+    setMcpEnabled(id, enabled, folder);
+    io.emit('mcp_list', listMcp(folder));
   });
   socket.on('mcp_sync', () => socket.emit('mcp_synced', syncAll()));
+  socket.on('approval_request_list', () => socket.emit('approval_list', listApprovals()));
+  socket.on('approval_decide', ({ id, approved } = {}) => {
+    try {
+      const item = decideApproval(id, !!approved);
+      if (item.status === 'approved') {
+        if (item.type === 'mcp') { addMcp(item.payload, item.folder); io.emit('mcp_list', listMcp(item.folder)); }
+        if (item.type === 'terminal') { openTerminal(item.payload.command, projectPath(ROOT, item.folder), item.payload.cliId || 'Jarvis'); }
+      }
+      io.emit('approval_list', listApprovals());
+    } catch (e) { socket.emit('approval_error', { error: e.message }); }
+  });
 
   // ── Custom API providers (OpenRouter / NVIDIA NIM / GitHub Models / any
   // OpenAI-compatible base URL). Add → discover models; the UI can filter free. ──
@@ -295,11 +577,43 @@ io.on('connection', (socket) => {
 
   // ── Chat: dispatch to either a real CLI (spawn in the project folder) or a
   // custom API provider (OpenAI-compatible HTTP), both with the shared brain. ──
-  socket.on('chat_send', async ({ cliId, model, effort, folder, prompt }) => {
+  socket.on('chat_send', async ({ cliId, model, effort, folder, prompt, confirmedCoding, missionId, missionStage }) => {
+    const roles = getRoles(folder);
+    const coderConfig = roles.coder;
+    const CODER_CLI = (coderConfig.kind === 'api' || coderConfig.kind === 'provider') 
+      ? `api:${coderConfig.id}` 
+      : coderConfig.id;
+
+    if (!confirmedCoding && cliId !== CODER_CLI) {
+      const decision = await route('chat:' + randomUUID(), prompt, folder);
+      if (decision && decision.isCodingTask) {
+        socket.emit('confirm_coder_switch', {
+          originalRequest: { cliId, model, effort, folder, prompt },
+          coderCli: CODER_CLI,
+          coderModel: coderConfig.model,
+          coderEffort: coderConfig.effort
+        });
+        return;
+      }
+    }
+
+    // Ruflow auto-routing: for simple, non-coding tasks, drop to low effort to save
+    // tokens. Complex/coding prompts keep the requested effort. Off unless ruflow is on.
+    if (isRuflowEnabled(folder) && effort && effort !== 'low') {
+      const heavy = prompt.length > 240 ||
+        /\b(refactor|implement|debug|build|architecture|migrate|fix|test|optimi[sz]e|design|analyze|review)\b/i.test(prompt);
+      if (!heavy) {
+        io.emit('terminal_log', `[jarvis] ruflow: '${effort}' → 'low' (simple task)\n`);
+        effort = 'low';
+      }
+    }
+
     const chatId = randomUUID();
     const startedAt = Date.now();
     const augmented = `${getContext(folder)}\n\nUser request:\n${prompt}`;
     io.emit('chat_started', { chatId, cliId, model, effort, folder, prompt, ts: startedAt });
+    taskBoard.set(chatId, { chatId, cli: cliId, folder: folder || '', prompt: String(prompt || '').replace(/\s+/g, ' ').slice(0, 220), startedAt });
+    broadcastTaskBoard();
 
     // Provider ids are namespaced "api:<providerId>".
     const isApi = typeof cliId === 'string' && cliId.startsWith('api:');
@@ -310,8 +624,12 @@ io.on('connection', (socket) => {
       const providerId = cliId.slice(4);
       const controller = new AbortController();
       activeRuns.set(chatId, { kind: 'api', controller, cliId });
+      // A raw API has no native effort flag, so mirror what cliRunner does for
+      // non-native CLIs and inject it as a hint — otherwise the UI's effort
+      // control would be decorative for API providers.
+      const apiPrompt = effort ? `Reasoning effort: ${effort}.\n\n${augmented}` : augmented;
       result = await runApiChat(
-        providerId, model, augmented,
+        providerId, model, apiPrompt + coordinationContext(chatId),
         (chunk) => io.emit('chat_stream', { chatId, cliId, chunk }),
         controller.signal,
       );
@@ -329,11 +647,13 @@ io.on('connection', (socket) => {
         io.emit('state_update', getState(running));
         return;
       }
-      const cwd = folder ? path.join(ROOT, folder) : ROOT;
-      result = await runCliTracked(cli, model, effort, cwd, augmented, chatId, cliId);
+      const cwd = projectPath(ROOT, folder);
+      result = await runCliTracked(cli, model, effort, cwd, augmented + coordinationContext(chatId), chatId, cliId);
     }
 
     activeRuns.delete(chatId);
+    taskBoard.delete(chatId);
+    broadcastTaskBoard();
     running = Math.max(0, running - 1);
     let status = result.status;
     if (stoppedIds.has(chatId)) { status = 'stopped'; stoppedIds.delete(chatId); }
@@ -342,12 +662,27 @@ io.on('connection', (socket) => {
       response: result.output, status, ts: Date.now(),
       durationMs: Date.now() - startedAt,
     };
+    if (missionId) {
+      try {
+        const evidence = getReviewEvidence(ROOT, folder || '');
+        updateMission(missionId, { status: status === 'success' ? 'ready' : 'blocked', note: `${missionStage || 'Stage'} ${status}. ${evidence.diff || 'No git diff.'}` });
+        io.emit('mission_list', listMissions(folder || ''));
+      } catch (e) { console.error('[mission] completion update failed:', e.message); }
+    }
     // Real token accounting so the Usage tab reflects this exchange.
     recordTokens((augmented.length || 0) + (result.output?.length || 0));
     appendChat(entry);
     io.emit('chat_done', entry);
     io.emit('state_update', getState(running));
     io.emit('usage_update', getUsage(running));
+
+    const reqRegex = /```jarvis:request-resource\s+({[\s\S]*?})\s+```/g;
+    let match;
+    while ((match = reqRegex.exec(result.output)) !== null) {
+      try {
+        io.emit('resource_requested', JSON.parse(match[1]));
+      } catch (e) {}
+    }
   });
 
   socket.on('chats_history', ({ folder } = {}) => {
@@ -381,7 +716,69 @@ io.on('connection', (socket) => {
     await executeSkill(skill, parameters);
   });
 
-  socket.on('disconnect', () => console.log(`[ws] client left: ${socket.id}`));
+  let ptyProcess = null;
+
+  socket.on('terminal_start', ({ cli, folder, cols, rows } = {}) => {
+    if (ptyProcess) return;
+
+    // WARNING: This gives full shell access! Bind to localhost only! No external exposure!
+    const isWin = os.platform() === 'win32';
+    const shell = isWin ? 'powershell.exe' : 'bash';
+
+    // Launch the SAME command the pop-out console uses for this CLI (registry
+    // default or the user's override), so every CLI — not just claude — opens
+    // its interactive session here. Empty `cli` => a plain interactive shell.
+    const launch = cli ? getCliCommand(cli) : '';
+    let args;
+    if (launch) {
+      args = isWin ? ['-NoExit', '-Command', launch] : ['-lc', `${launch}; exec bash`];
+    } else {
+      args = isWin ? ['-NoLogo'] : ['-l'];
+    }
+
+    // Run in the selected project folder so the CLI acts on the right project.
+    let cwd = ROOT;
+    if (folder) {
+      try { cwd = projectPath(ROOT, folder); } catch { socket.emit('terminal_data', '\r\n[jarvis] Invalid project folder.\r\n'); return; }
+    }
+
+    try {
+      ptyProcess = pty.spawn(shell, args, {
+        name: 'xterm-256color',
+        cols: cols || 80,
+        rows: rows || 24,
+        cwd,
+        env: process.env
+      });
+      ptyProcess.onData((data) => {
+        socket.emit('terminal_data', data);
+      });
+      ptyProcess.onExit(() => {
+        socket.emit('terminal_exit');
+        ptyProcess = null;
+      });
+    } catch (e) {
+      socket.emit('terminal_data', `\r\nFailed to start terminal: ${e.message}\r\n`);
+    }
+  });
+
+  socket.on('terminal_input', (data) => {
+    if (ptyProcess) ptyProcess.write(data);
+  });
+
+  socket.on('terminal_resize', ({ cols, rows }) => {
+    if (ptyProcess && cols && rows) {
+      try { ptyProcess.resize(cols, rows); } catch (e) {}
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`[ws] client left: ${socket.id}`);
+    if (ptyProcess) {
+      try { ptyProcess.kill(); } catch (e) {}
+      ptyProcess = null;
+    }
+  });
 });
 
 // Live-state heartbeat: sample the token series and push a fresh snapshot.
@@ -391,4 +788,4 @@ setInterval(() => {
   io.emit('usage_update', getUsage(running));
 }, 3000);
 
-server.listen(PORT, () => console.log(`[jarvis] orchestrator on http://localhost:${PORT}`));
+server.listen(PORT, HOST, () => console.log(`[jarvis] orchestrator on http://${HOST}:${PORT}`));

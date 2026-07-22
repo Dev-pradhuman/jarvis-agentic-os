@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { VAULT_PATH } from './brain.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VAULT = process.env.JARVIS_VAULT
@@ -26,6 +27,7 @@ const estTokens = (chars) => Math.round(chars / 4);
 const clampPct = (n) => Math.max(2, Math.min(100, Math.round(n)));
 
 function fmtK(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
   return String(n);
 }
@@ -154,5 +156,31 @@ export function getState(runningCount) {
     calendar: getCalendar(),
     tokens: [...tokenSeries],
     tokensLabel: fmtK(cumulativeTokens),
+  };
+}
+
+export function getProjectDashboard(folder) {
+  if (!folder) return null;
+  const slug = folder.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const projectVault = path.join(VAULT_PATH, 'folders', slug);
+  
+  function getProjectDocs() {
+    return safeWalk(projectVault)
+      .filter((f) => !f.endsWith('.gitkeep'))
+      .map((f) => {
+        let m = 0;
+        try { m = fs.statSync(f).mtimeMs; } catch {}
+        return { id: path.relative(projectVault, f), name: path.basename(f), when: relTime(m), _m: m };
+      })
+      .sort((a, b) => b._m - a._m)
+      .slice(0, 6)
+      .map(({ _m, ...rest }) => rest);
+  }
+  
+  return {
+    documents: getProjectDocs(),
+    // Fall back to main brain directives/calendar if project doesn't have them
+    directives: getDirectives(),
+    calendar: getCalendar()
   };
 }

@@ -6,6 +6,7 @@ import { extractSpokenSummary, speak } from '../lib/tts';
 const ORCHESTRATOR_URL = 'http://localhost:3030';
 
 let socket; // module singleton
+const pendingEnhancements = new Map();
 
 /**
  * Connects to the orchestrator and pipes WS events into the Zustand store.
@@ -57,9 +58,16 @@ export function useSocket() {
       if (intent === 'UI_CLEAR_CONTEXT') clearPopups();
     });
     socket.on('state_update', (state) => setLiveState(state));
+    socket.on('agent_activity', (activity) => useJarvisStore.getState().setAgentActivity(activity || []));
+    socket.on('operations_health', (health) => useJarvisStore.getState().setOperationsHealth(health));
+    socket.on('operations_review', (review) => useJarvisStore.getState().setReviewEvidence(review));
+    socket.on('approval_list', (approvals) => useJarvisStore.getState().setApprovals(approvals || []));
+    socket.on('mission_list', (missions) => useJarvisStore.getState().setMissions(missions || []));
+    socket.on('routing_profiles', (profiles) => useJarvisStore.getState().setRoutingProfiles(profiles || {}));
 
     // Multi-CLI chat + brain
     socket.on('cli_list', (clis) => setClis(clis));
+    socket.on('cli_commands', (commands) => useJarvisStore.getState().setCliCommands(commands || {}));
     socket.on('folders_list', (payload) => setFolders(payload));
     socket.on('chat_started', (meta) => startChatSession(meta));
     socket.on('chat_stream', ({ chatId, chunk }) => appendChatChunk(chatId, chunk));
@@ -102,6 +110,64 @@ export function useSocket() {
     socket.on('skill_content', (payload) => setSkillContent(payload));
     socket.on('usage_update', (u) => setUsage(u));
 
+    // Prompt enhancement
+    socket.on('prompt_enhanced', ({ reqId, result }) => {
+      if (pendingEnhancements.has(reqId)) {
+        pendingEnhancements.get(reqId)(result);
+        pendingEnhancements.delete(reqId);
+      }
+    });
+
+    // Roles
+    const setRoles = useJarvisStore.getState().setRoles;
+    socket.on('roles_state', ({ roles }) => setRoles(roles));
+    socket.on('roles_updated', ({ roles }) => setRoles(roles));
+
+    // Ruflow (token-lean mode + memory bank)
+    socket.on('ruflow_state', (state) => useJarvisStore.getState().setRuflow(state));
+
+    // Plugins — custom Jarvis plugins + Claude Code plugin parity
+    socket.on('plugins_list', (list) => useJarvisStore.getState().setPlugins(list || []));
+    socket.on('claude_plugins_list', ({ plugins }) => useJarvisStore.getState().setClaudePlugins(plugins || []));
+
+    // ── Surface backend error/success events that previously had NO listener at
+    // all, so failures (role save, plugin activate, terminal open) were invisible. ──
+    const toast = (kind, title) => (payload) =>
+      useJarvisStore.getState().pushToast(kind, title, payload?.error || payload?.message || '');
+    socket.on('roles_error', toast('error', 'Role not saved'));
+    socket.on('ruflow_error', toast('error', 'Ruflow'));
+    socket.on('cli_command_error', toast('error', 'CLI command'));
+    socket.on('claude_plugin_error', toast('error', 'Plugin'));
+    socket.on('terminal_opened', ({ command }) =>
+      useJarvisStore.getState().pushToast('success', 'Terminal opened', command || ''));
+    socket.on('plugin_scaffolded', ({ id, dir }) =>
+      useJarvisStore.getState().pushToast('success', `Plugin '${id}' created`, `Edit it at ${dir}, then Activate`));
+    socket.on('seed_best_done', ({ mcps, skills }) =>
+      useJarvisStore.getState().pushToast('success', 'Seeded', `${mcps} MCP servers + ${skills} skills`));
+    socket.on('stopped_all', ({ count }) =>
+      useJarvisStore.getState().pushToast('success', 'Kill switch', `Halted ${count} running task(s)`));
+    socket.on('mcp_synced', () =>
+      useJarvisStore.getState().pushToast('success', 'MCP synced', 'All CLI configs updated'));
+    socket.on('remembered', (r) => r?.ok === false
+      ? useJarvisStore.getState().pushToast('error', 'Remember failed', r.error || '')
+      : useJarvisStore.getState().pushToast('success', 'Saved to brain', ''));
+    socket.on('folder_analyzed', ({ folder }) =>
+      useJarvisStore.getState().pushToast('success', 'Project analyzed', `${folder || 'root'} — brief written to its brain`));
+    socket.on('analyze_error', ({ folder, message }) =>
+      useJarvisStore.getState().pushToast('error', 'Analyze failed', `${folder}: ${message}`));
+
+    // Coder switch confirmation
+    socket.on('confirm_coder_switch', ({ originalRequest, coderCli }) => {
+      // We will handle this by showing a popup in the UI. For now, dispatch event or handle via state.
+      // Since useSocket is a hook, we can dispatch to window so the component can listen.
+      window.dispatchEvent(new CustomEvent('jarvis:coder_switch', { detail: { originalRequest, coderCli } }));
+    });
+
+    // Resource request
+    socket.on('resource_requested', (resource) => {
+      window.dispatchEvent(new CustomEvent('jarvis:resource_requested', { detail: resource }));
+    });
+
     return () => {
       socket.disconnect();
       setConnected(false);
@@ -143,8 +209,8 @@ export function sendSkill(skillId, parameters = {}) {
 }
 
 /** Send a chat to a real CLI (runs it on the machine with the shared brain). */
-export function sendChat({ cliId, model, effort, folder, prompt }) {
-  socket?.emit('chat_send', { cliId, model, effort, folder, prompt });
+export function sendChat({ cliId, model, effort, folder, prompt, missionId, missionStage }) {
+  socket?.emit('chat_send', { cliId, model, effort, folder, prompt, missionId, missionStage });
 }
 
 /** Request the brain's chat history for a folder ('' = global). */
@@ -184,16 +250,33 @@ export function removeMcp(id) {
   socket?.emit('mcp_remove', { id });
 }
 
-export function toggleMcp(id, enabled) {
-  socket?.emit('mcp_toggle', { id, enabled });
+export function toggleMcp(id, enabled, folder) {
+  socket?.emit('mcp_toggle', { id, enabled, folder });
+}
+
+/**
+ * Re-push the registry into every CLI's native config. add/remove/toggle already
+ * sync, so this is the manual repair path for when a CLI's config drifts — e.g. you
+ * hand-edited it, or another tool clobbered the managed block.
+ */
+export function syncMcps() {
+  socket?.emit('mcp_sync');
+}
+
+/**
+ * Re-scan a project and refresh its sub-brain brief. Projects self-analyze on first
+ * use, so this is only for forcing a refresh after the project changes shape.
+ */
+export function analyzeFolder(folder = '') {
+  socket?.emit('analyze_folder', { folder });
 }
 
 // ── Skills dashboard ──
-export function requestSkills() {
-  socket?.emit('skills_request');
+export function requestSkills(folder) {
+  socket?.emit('skills_request', { folder });
 }
-export function toggleSkill(id, enabled) {
-  socket?.emit('skill_toggle', { id, enabled });
+export function toggleSkill(id, enabled, folder) {
+  socket?.emit('skill_toggle', { id, enabled, folder });
 }
 export function readSkill(id) {
   socket?.emit('skill_read', { id });
@@ -201,14 +284,53 @@ export function readSkill(id) {
 export function saveSkill(id, content) {
   socket?.emit('skill_save', { id, content });
 }
-export function deleteSkill(id) {
-  socket?.emit('skill_delete', { id });
+export function deleteSkill(id, folder) {
+  socket?.emit('skill_delete', { id, folder });
+}
+
+// ── Plugins ──
+export function requestPlugins(folder) {
+  socket?.emit('plugins_request', { folder });
+}
+export function addPlugin(spec, folder) {
+  socket?.emit('plugin_add', { spec, folder });
+}
+export function removePlugin(id, folder) {
+  socket?.emit('plugin_remove', { id, folder });
+}
+export function togglePlugin(id, enabled, folder) {
+  socket?.emit('plugin_toggle', { id, enabled, folder });
+}
+
+// ── Claude Code plugin parity (usable by every CLI + API) ──
+export function requestClaudePlugins(folder = '') {
+  socket?.emit('claude_plugins_request', { folder });
+}
+export function activateClaudePlugin(id, folder = '') {
+  socket?.emit('claude_plugin_activate', { id, folder });
+}
+export function deactivateClaudePlugin(id, folder = '') {
+  socket?.emit('claude_plugin_deactivate', { id, folder });
+}
+export function toggleClaudePlugin(id, enabled, folder = '') {
+  socket?.emit('claude_plugin_toggle', { id, enabled, folder });
+}
+/** Scaffold one of your own plugins (same format → reaches every CLI + API). */
+export function scaffoldPlugin(name, folder = '') {
+  socket?.emit('claude_plugin_scaffold', { name, folder });
 }
 
 // ── Usage analytics ──
 export function requestUsage() {
   socket?.emit('usage_request');
 }
+export function requestOperationsHealth() { socket?.emit('operations_health_request'); }
+export function requestReviewEvidence(folder = '') { socket?.emit('operations_review_request', { folder }); }
+export function requestApprovals() { socket?.emit('approval_request_list'); }
+export function decideApproval(id, approved) { socket?.emit('approval_decide', { id, approved }); }
+export function requestMissions(folder = '') { socket?.emit('mission_list_request', { folder }); }
+export function createMission(title, folder = '') { socket?.emit('mission_create', { title, folder }); }
+export function updateMission(id, patch, folder = '') { socket?.emit('mission_update', { id, patch, folder }); }
 
 // ── Control + memory + search ──
 export function stopChat(chatId) {
@@ -222,4 +344,56 @@ export function remember(folder, text) {
 }
 export function searchBrain(query) {
   socket?.emit('search', { query });
+}
+
+export function enhancePromptRequest(cliId, folder, prompt) {
+  return new Promise((resolve) => {
+    const reqId = Date.now().toString() + Math.random().toString();
+    pendingEnhancements.set(reqId, resolve);
+    socket?.emit('enhance_prompt', { reqId, cliId, folder, prompt });
+  });
+}
+
+// ── Curated best-of catalog ──
+export function requestCatalog() {
+  socket?.emit('catalog_get');
+}
+export function seedBest(folder = '') {
+  socket?.emit('seed_best', { folder });
+}
+
+// ── Ruflow — token-lean mode + per-project memory bank ──
+export function requestRuflow(folder = '') {
+  socket?.emit('ruflow_get', { folder });
+}
+export function setRuflow(enabled, folder = '') {
+  socket?.emit('ruflow_set', { enabled, folder });
+}
+export function saveRuflowMemory(folder, section, content) {
+  socket?.emit('ruflow_memory_save', { folder, section, content });
+}
+
+// ── One-click CLI terminal commands ──
+/** Fetch the merged { cliId: command } map. */
+export function requestCliCommands() {
+  socket?.emit('cli_commands_request');
+}
+/** Save (or reset, if command is empty) a CLI's terminal command. */
+export function setCliCommand(cliId, command) {
+  socket?.emit('cli_command_set', { cliId, command });
+}
+/** Open a real console window running the CLI's command (or an explicit override). */
+export function openTerminal(cliId, folder = '', command) {
+  socket?.emit('open_terminal', { cliId, folder, command });
+}
+
+// ── Roles ──
+export function requestRoles(folder) {
+  socket?.emit('get_roles', { folder });
+}
+export function setRoleConfig(role, config, folder) {
+  socket?.emit('set_role', { role, config, folder });
+}
+export function clearRolesOverride(folder) {
+  socket?.emit('clear_roles_override', { folder });
 }

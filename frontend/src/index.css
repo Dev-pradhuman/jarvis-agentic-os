@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 @import 'tailwindcss';
 
 @custom-variant dark (&:is(.dark *));
@@ -16,22 +16,22 @@
   --color-success: var(--success);
   --color-border: var(--panel-border);
 
-  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
 
-  --shadow-glow-accent: 0 0 20px rgba(139, 92, 246, 0.15);
-  --shadow-glow-success: 0 0 15px rgba(16, 185, 129, 0.2);
+  --shadow-glow-accent: 0 0 12px rgba(139, 92, 246, 0.10);
+  --shadow-glow-success: 0 0 10px rgba(16, 185, 129, 0.14);
 }
 
 :root {
   --radius: 1rem;
-  --background: #050507;
+  --background: #101413;
   --foreground: oklch(0.98 0 0);
-  --panel: rgba(255, 255, 255, 0.02);
-  --panel-border: rgba(255, 255, 255, 0.08);
-  --muted: rgba(255, 255, 255, 0.04);
-  --muted-foreground: #87878a;
-  --accent: #8b5cf6;
+  --panel: #171d1b;
+  --panel-border: #29332f;
+  --muted: #1c2521;
+  --muted-foreground: #91a19a;
+  --accent: #d8ff5e;
   --accent-foreground: oklch(0.98 0 0);
   --success: #10b981;
 }
@@ -53,15 +53,13 @@
   }
 }
 
-/* Glassmorphism base — applied by every panel/popup. */
+/* Panel base — flatter, calmer glass. Less blur + a softer shadow read as
+   "minimal" while keeping just enough depth to separate panels from the bg. */
 @utility glass-panel {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(24px) saturate(140%);
-  border-radius: 1rem;
-  box-shadow:
-    0 20px 60px -20px rgba(0, 0, 0, 0.8),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 0.625rem;
+  box-shadow: none;
 }
 
 @keyframes pulse-dot {
@@ -82,5 +80,22 @@
   }
   100% {
     transform: translateY(100%);
+  }
+}
+
+/* Skeleton loaders — sweeping highlight while data is in flight. */
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

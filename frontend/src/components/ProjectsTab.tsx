@@ -11,15 +11,9 @@ export function ProjectsTab() {
   const folders = useJarvisStore((s) => s.folders);
   const activeFolder = useJarvisStore((s) => s.activeFolder);
   const setActiveFolder = useJarvisStore((s) => s.setActiveFolder);
-  const setView = useJarvisStore((s) => s.setView);
-  const addPane = useJarvisStore((s) => s.addPane);
-  const clis = useJarvisStore((s) => s.clis);
 
   function open(folder: string) {
     setActiveFolder(folder);
-    const first = clis.find((c: any) => c.available);
-    if (first) addPane(first.id); // also sets view = 'chats'
-    else setView("chats");
   }
 
   return (

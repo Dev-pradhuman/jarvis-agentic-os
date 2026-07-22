@@ -23,6 +23,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mcpCatalog } from './mcp.js';
 import { SKILLS } from './skills.js';
+import { getEnabledSkillInstructions, listSkills } from './skillsManager.js';
+import { listPlugins } from './plugins.js';
+import { isRuflowEnabled, getRuflowInjection, recordToMemoryBank } from './ruflow.js';
+import { analyzeProject } from './projectAnalyzer.js';
 
 const PROJECTS_ROOT = process.env.JARVIS_PROJECTS_ROOT || 'C:\\Users\\Pradhuman\\projects';
 const BRAIN_ROOT = path.join(PROJECTS_ROOT, '.jarvis-brain');
@@ -40,11 +44,18 @@ export const VAULT_PATH = BRAIN_ROOT;
 const MAIN_ALIAS = 'Jarvis Main Brain';
 const AUTO_START = '<!-- jarvis:auto:start -->';
 const AUTO_END = '<!-- jarvis:auto:end -->';
+// The auto-analysis block is a SEPARATE managed region from the recent-conversations
+// block, with its own markers. It survives readDurable (which only strips jarvis:auto),
+// so the project brief reaches every CLI as context — that's what removes the need to
+// ever say "analyze this folder".
+const ANALYSIS_START = '<!-- jarvis:analysis:start -->';
+const ANALYSIS_END = '<!-- jarvis:analysis:end -->';
 
 function esc(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 const AUTO_RE = new RegExp(`${esc(AUTO_START)}[\\s\\S]*?${esc(AUTO_END)}`);
+const ANALYSIS_RE = new RegExp(`${esc(ANALYSIS_START)}[\\s\\S]*?${esc(ANALYSIS_END)}`);
 
 function slug(folder) {
   return (folder || '_root').replace(/[^a-zA-Z0-9._-]/g, '_');
@@ -104,6 +115,18 @@ function readLog(p, limit) {
   } catch {
     return [];
   }
+}
+
+/**
+ * Recall = only exchanges worth remembering. A failed or stopped run teaches the
+ * next agent nothing and actively misleads it: a 402 from a provider or a CLI's
+ * own usage text is not a fact about the project, but it reads as one once it's
+ * sitting under "Recent in this project". Filtering happens BEFORE the slice so a
+ * burst of failures can't crowd the real exchanges out of the window.
+ */
+function readRecall(p, limit) {
+  const good = readLog(p).filter((e) => e && e.status !== 'error' && e.status !== 'stopped');
+  return limit ? good.slice(-limit) : good;
 }
 
 // ── Obsidian note plumbing ───────────────────────────────────────────────────
@@ -308,6 +331,33 @@ function renderSubNote(folder) {
   upsertAuto(subBrainPath(folder), subScaffold(folder), auto);
 }
 
+/**
+ * Run the local project analyzer and upsert its brief into this folder's sub-brain,
+ * inside the jarvis:analysis block — inserted just before the recent-conversations
+ * block, and never touching the hand-written ## Notes. Returns the brief written.
+ */
+function writeProjectAnalysis(folder) {
+  const filePath = subBrainPath(folder);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, subScaffold(folder) + '\n');
+
+  const brief = analyzeProject(folder);
+  const block = `${ANALYSIS_START}\n${brief}\n${ANALYSIS_END}`;
+  let text = readSafe(filePath);
+
+  // Function replacers so a `$` in the brief (a cost, a dep name) is never parsed
+  // as a $&/$1 replacement pattern — that class of bug caused the codex dup block.
+  if (ANALYSIS_RE.test(text)) {
+    text = text.replace(ANALYSIS_RE, () => block); // refresh in place
+  } else if (AUTO_RE.test(text)) {
+    text = text.replace(AUTO_RE, (m) => `${block}\n\n${m}`); // sit above recent-conversations
+  } else {
+    text = `${text.trim()}\n\n${block}\n`;
+  }
+  fs.writeFileSync(filePath, text);
+  return brief;
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /** Create the vault + main brain note if missing. */
@@ -338,14 +388,37 @@ export function getContext(folder) {
   ensureBrain();
   ensureSubBrain(folder);
 
+  // Self-populate on first use: if this folder has never been analyzed, scan it
+  // once now so the very first prompt already carries the project brief. The block
+  // then persists, so this bounded scan runs at most once per project — not per
+  // prompt. This is what lets you skip "analyze this folder" entirely.
+  if (folder && !readSafe(subBrainPath(folder)).includes(ANALYSIS_START)) {
+    try { writeProjectAnalysis(folder); } catch { /* best-effort; never block a prompt */ }
+  }
+
+  const ruflowOn = isRuflowEnabled(folder);
   const compact = (e) => `- [${e.cli}${e.folder ? '/' + e.folder : ''}] ${truncate(e.prompt, 160)} → ${truncate(e.response, 220)}`;
-  const folderRecent = readLog(folderLog(folder), FOLDER_RECALL).map(compact).join('\n');
-  const globalRecent = readLog(GLOBAL_LOG, GLOBAL_RECALL).map(compact).join('\n');
+  // Ruflow keeps context lean: the distilled memory bank stands in for the verbose
+  // recent-conversation dump (fewer input tokens), while still grounding the agent.
+  const folderRecent = ruflowOn ? '' : readRecall(folderLog(folder), FOLDER_RECALL).map(compact).join('\n');
+  const globalRecent = ruflowOn ? '' : readRecall(GLOBAL_LOG, GLOBAL_RECALL).map(compact).join('\n');
   const mcpTools = mcpCatalog();
-  const skillsCatalog = Object.values(SKILLS).map((s) => `- ${s.id}: ${s.label}`).join('\n');
+  // The REAL skill store (SOPs on disk incl. everything activated from Claude Code
+  // plugins), not just the 5 voice-router built-ins — otherwise every skill you add
+  // is invisible to the agents. Disabled skills are omitted; ruflow trims the list
+  // to the router-registered ones to stay token-lean.
+  const skillsCatalog = (() => {
+    let list = listSkills(folder).filter((s) => s.enabled);
+    if (ruflowOn) list = list.filter((s) => s.registered);
+    if (!list.length) return '';
+    return list.map((s) => `- ${s.id}: ${s.label}`).join('\n');
+  })();
+  const skillInstructions = ruflowOn ? '' : getEnabledSkillInstructions(folder);
+  const plugins = listPlugins(folder).filter((p) => p.enabled).map((p) => `- ${p.label || p.id}`).join('\n');
 
   return [
     '===== JARVIS BRAIN (shared cross-CLI memory — use it, do not repeat verbatim) =====',
+    ruflowOn ? getRuflowInjection(folder) : '',
     '# Main brain (shared across ALL projects and all CLIs)',
     readDurable(MAIN_BRAIN),
     `# Project sub-brain: ${folder || '(main)'}`,
@@ -353,7 +426,10 @@ export function getContext(folder) {
     folderRecent ? `# Recent in this project (all CLIs)\n${folderRecent}` : '',
     globalRecent ? `# Recent across all projects (all CLIs)\n${globalRecent}` : '',
     mcpTools ? `# MCP servers available (tools you can use)\n${mcpTools}` : '',
-    `# Jarvis skills available (SOPs — describe to run one)\n${skillsCatalog}`,
+    skillsCatalog ? `# Jarvis skills available (SOPs — describe to run one)\n${skillsCatalog}` : '',
+    skillInstructions ? `# Enabled skill instructions\n${skillInstructions}` : '',
+    plugins ? `# Enabled Jarvis plugins\n${plugins}` : '',
+    '# INSTRUCTION: Always provide concise and terse responses unless explicitly asked for detail.',
     '===== END BRAIN =====',
   ]
     .filter(Boolean)
@@ -370,6 +446,8 @@ export function appendChat(entry) {
   const line = `${JSON.stringify(entry)}\n`;
   fs.appendFileSync(folderLog(entry.folder), line);
   fs.appendFileSync(GLOBAL_LOG, line);
+  // Ruflow: roll this exchange into the distilled memory bank (no-op when off).
+  recordToMemoryBank(entry.folder, { prompt: entry.prompt, response: entry.response, cli: entry.cli, status: entry.status });
   // Live Obsidian update: rewrite this folder's note + the main index.
   try {
     renderSubNote(entry.folder);
@@ -453,10 +531,30 @@ export function generateAllSubBrains() {
     const existed = fs.existsSync(p);
     ensureSubBrain(f);
     renderSubNote(f); // refresh recent-conversations block from the log
-    if (!existed) created.push(f);
+    // A brand-new project gets analyzed the first time we ever see it — that's the
+    // "new projects at the time of making them" path: the folder is understood
+    // before any CLI touches it, so nobody has to say "analyze this folder".
+    if (!existed) { try { writeProjectAnalysis(f); } catch { /* best-effort */ } created.push(f); }
   }
   renderMainNote();
   return { total: all.length, created };
+}
+
+/**
+ * Re-run the analyzer for one folder (or every folder when `folder` is undefined)
+ * and refresh the sub-brain brief. This is the manual "re-analyze" path for when a
+ * project has changed shape since it was first seen.
+ */
+export function analyzeFolder(folder) {
+  ensureBrain();
+  if (folder === undefined) {
+    const all = listFolders();
+    for (const f of all) { ensureSubBrain(f); try { writeProjectAnalysis(f); } catch { /* skip */ } }
+    return { analyzed: all.length };
+  }
+  ensureSubBrain(folder);
+  const brief = writeProjectAnalysis(folder);
+  return { folder, brief };
 }
 
 /** Subfolders of the projects root (candidate sub-brains). */

@@ -1,16 +1,40 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, CornerDownLeft, FolderGit2, Hash, MessageSquare, Play, Plug, Search, Square, Terminal, Zap } from "lucide-react";
+import { Activity, Box, CornerDownLeft, FolderGit2, Hash, MessageSquare, Play, Plug, RefreshCw, Search, Square, Terminal, Zap } from "lucide-react";
 import { useJarvisStore } from "../store";
-import { searchBrain, sendSkill, stopAll } from "../hooks/useSocket";
+import { analyzeFolder, openTerminal, searchBrain, sendSkill, setRuflow, stopAll, syncMcps } from "../hooks/useSocket";
 import { agentColor } from "./shared";
 
 type Action = { id: string; label: string; hint?: string; icon: any; color?: string; run: () => void };
+
+/**
+ * Subsequence match with a score, so "gp" finds "Go to Plugins" and "ocl" finds
+ * "Open chat · Claude" — a substring filter can't, and typing the exact words is
+ * the slow path this palette exists to avoid. Score rewards hits that start a word
+ * and hits that land close together, so the tightest match sorts first.
+ */
+function fuzzy(label: string, needle: string): number | null {
+  const hay = label.toLowerCase();
+  let i = 0;
+  let score = 0;
+  let last = -1;
+  for (const ch of needle) {
+    const at = hay.indexOf(ch, i);
+    if (at === -1) return null;
+    if (at === 0 || /[\s·\-_/]/.test(hay[at - 1])) score += 10; // word start
+    if (last >= 0 && at === last + 1) score += 5; // contiguous run
+    score -= Math.min(at - i, 6); // distance penalty
+    last = at;
+    i = at + 1;
+  }
+  return score;
+}
 
 export function CommandPalette() {
   const open = useJarvisStore((s) => s.paletteOpen);
   const setOpen = useJarvisStore((s) => s.setPaletteOpen);
   const setView = useJarvisStore((s) => s.setView);
   const setActiveFolder = useJarvisStore((s) => s.setActiveFolder);
+  const activeFolder = useJarvisStore((s) => s.activeFolder);
   const addPane = useJarvisStore((s) => s.addPane);
   const folders = useJarvisStore((s) => s.folders);
   const clis = useJarvisStore((s) => s.clis);
@@ -49,12 +73,29 @@ export function CommandPalette() {
       { id: "t-chats", label: "Go to Chats", icon: MessageSquare, run: () => setView("chats") },
       { id: "t-skills", label: "Go to Skills", icon: Zap, run: () => setView("skills") },
       { id: "t-mcps", label: "Go to MCPs", icon: Plug, run: () => setView("mcps") },
+      { id: "t-plugins", label: "Go to Plugins", icon: Box, run: () => setView("plugins") },
       { id: "t-usage", label: "Go to Usage", icon: Activity, run: () => setView("usage") },
       { id: "stop-all", label: "Stop all agents", hint: "kill switch", icon: Square, color: "#ef4444", run: () => stopAll() },
+      { id: "mcp-sync", label: "Sync MCPs to every CLI config", hint: "repair", icon: RefreshCw, color: "#f472b6", run: () => syncMcps() },
+      {
+        id: "analyze-folder", hint: "brain", icon: RefreshCw, color: "#a78bfa",
+        label: activeFolder ? `Re-analyze project · ${activeFolder}` : "Re-analyze all projects",
+        run: () => analyzeFolder(activeFolder),
+      },
+      {
+        id: "ruflow-on", label: "Ruflow · token-lean mode ON", hint: "cheaper", icon: Zap, color: "#10b981",
+        run: () => setRuflow(true, activeFolder),
+      },
+      {
+        id: "ruflow-off", label: "Ruflow · token-lean mode OFF", hint: "verbose", icon: Zap, color: "#f59e0b",
+        run: () => setRuflow(false, activeFolder),
+      },
     ];
     for (const c of clis) {
       if (!c.available) continue;
       a.push({ id: `agent-${c.id}`, label: `Open chat · ${c.label}`, hint: "tile", icon: Terminal, color: agentColor(c.id), run: () => addPane(c.id) });
+      // The one-click console — same command the Projects tab launches.
+      a.push({ id: `term-${c.id}`, label: `Open terminal · ${c.label}`, hint: "console", icon: Terminal, color: agentColor(c.id), run: () => openTerminal(c.id, activeFolder) });
     }
     for (const p of providers) {
       a.push({ id: `agent-api-${p.id}`, label: `Open chat · ${p.label}`, hint: "API", icon: Zap, color: "#22d3ee", run: () => addPane(`api:${p.id}`) });
@@ -67,12 +108,16 @@ export function CommandPalette() {
       a.push({ id: `skill-${sk.id}`, label: `Run skill · ${sk.label}`, hint: "SOP", icon: Play, color: "#10b981", run: () => sendSkill(sk.id) });
     }
     return a;
-  }, [clis, providers, folders, skills, setView, setActiveFolder, addPane]);
+  }, [clis, providers, folders, skills, setView, setActiveFolder, addPane, activeFolder]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return actions;
-    return actions.filter((x) => x.label.toLowerCase().includes(needle));
+    return actions
+      .map((x) => ({ x, s: fuzzy(x.label, needle) }))
+      .filter((r): r is { x: Action; s: number } => r.s !== null)
+      .sort((a, b) => b.s - a.s)
+      .map((r) => r.x);
   }, [actions, q]);
 
   // Flat list: actions first, then brain search hits.

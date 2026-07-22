@@ -7,15 +7,16 @@ import {
   BrainCircuit,
   Calendar,
   FileText,
+  FolderGit2,
   Inbox,
   Mail,
+  MessagesSquare,
   Mic,
   NotebookPen,
   Radio,
   Search,
   Sparkles,
   Sun,
-  Target,
   Terminal,
   X,
   Zap,
@@ -24,15 +25,12 @@ import {
 import { useJarvisStore } from "../store";
 import { sendSkill } from "../hooks/useSocket";
 import { useVoice } from "../hooks/useVoice";
+import { Skeleton } from "./ui";
 
 // ─────────────────────────────────────────────────────────────
-// Types + mock data
+// Types
 // ─────────────────────────────────────────────────────────────
 
-type Vital = { label: string; value: string; pct: number; tone: "accent" | "success" };
-type Directive = { id: string; title: string; tag: string };
-type DocItem = { id: string; name: string; when: string };
-type LogLine = { id: string; time: string; source: string; text: string; tone: "muted" | "accent" | "success" };
 type Skill = {
   id: string;
   label: string;
@@ -40,29 +38,13 @@ type Skill = {
   icon: typeof Sparkles;
   steps: string[];
 };
-type CalEvent = { id: string; time: string; title: string; where: string; live?: boolean };
 
-const VITALS: Vital[] = [
-  { label: "CONTEXT", value: "466K", pct: 72, tone: "accent" },
-  { label: "MEMORY", value: "128K", pct: 44, tone: "accent" },
-  { label: "AGENTS", value: "07", pct: 88, tone: "success" },
-  { label: "LATENCY", value: "042ms", pct: 21, tone: "success" },
-];
-
-const DIRECTIVES: Directive[] = [
-  { id: "d1", title: "Ship Q3 retrospective deck", tag: "P0" },
-  { id: "d2", title: "Review 12 pending PRs across repos", tag: "P1" },
-  { id: "d3", title: "Draft strategy memo — Northwind acq.", tag: "P1" },
-];
-
-const DOCS: DocItem[] = [
-  { id: "f1", name: "strategy-memo-v3.md", when: "2m" },
-  { id: "f2", name: "board-notes-oct.pdf", when: "14m" },
-  { id: "f3", name: "runbook-agent-fleet.md", when: "1h" },
-  { id: "f4", name: "northwind-diligence.xlsx", when: "3h" },
-  { id: "f5", name: "roadmap-2026.canvas", when: "yday" },
-  { id: "f6", name: "meeting-transcript.txt", when: "yday" },
-];
+// NOTE: the hardcoded VITALS / DIRECTIVES / DOCS / CALENDAR / LOG_SEEDS demo
+// constants (and their row types) were removed. They were used as *fallbacks*, so
+// an empty real list rendered invented rows — fake directives, a fake token curve,
+// a synthetic log feed — indistinguishable from live data. The panels below read
+// real state only, showing skeletons while the first state_update is in flight and
+// honest empty states after.
 
 const SKILLS: Skill[] = [
   {
@@ -75,7 +57,7 @@ const SKILLS: Skill[] = [
   {
     id: "inbox",
     label: "Inbox Brief",
-    sub: "Triage 47 threads",
+    sub: "Triage threads",
     icon: Inbox,
     steps: ["Reading inbox", "Clustering by intent", "Drafting replies", "Awaiting approval"],
   },
@@ -100,47 +82,20 @@ const SKILLS: Skill[] = [
     icon: NotebookPen,
     steps: ["Opening capture buffer", "Tagging context", "Filing to vault"],
   },
-  {
-    id: "focus",
-    label: "Focus Mode",
-    sub: "Silence non-critical",
-    icon: Target,
-    steps: ["Muting channels", "Rerouting agents", "Entering deep work"],
-  },
 ];
 
-// Maps a Skill Matrix button to its orchestrator SKILL_ id. Skills without a
-// backend id (e.g. focus) run as a pure client-side visual.
-const SKILL_BACKEND_ID: Record<string, string | undefined> = {
+// Maps a Skill Matrix button to its orchestrator SKILL_ id. Every skill here MUST
+// have one: a tile without a backend would animate its steps to 100% and report
+// success while doing nothing. "Focus Mode" was exactly that — it claimed to mute
+// channels and reroute agents with no code behind it — so it's gone until a real
+// SKILL_FOCUS_MODE exists to back it.
+const SKILL_BACKEND_ID: Record<string, string> = {
   morning: "SKILL_MORNING_BRIEF",
   inbox: "SKILL_INBOX_TRIAGE",
   deep: "SKILL_DEEP_RESEARCH",
   sched: "SKILL_SCHEDULE_CHECK",
   note: "SKILL_CREATE_NOTE",
-  focus: undefined,
 };
-
-const CALENDAR: CalEvent[] = [
-  { id: "e1", time: "09:00", title: "Standup — Fleet team", where: "Meet" },
-  { id: "e2", time: "10:30", title: "1:1 with Priya", where: "Room 3", live: true },
-  { id: "e3", time: "12:00", title: "Lunch — Marcus", where: "Onsite" },
-  { id: "e4", time: "14:00", title: "Northwind diligence review", where: "Zoom" },
-  { id: "e5", time: "16:30", title: "Deep work — memo", where: "Blocked" },
-  { id: "e6", time: "18:00", title: "Board dinner", where: "SoHo" },
-];
-
-const LOG_SEEDS: Omit<LogLine, "id" | "time">[] = [
-  { source: "core", text: "context.ingest → 12 sources synced", tone: "muted" },
-  { source: "agent-04", text: "spawned researcher, budget=8k tokens", tone: "accent" },
-  { source: "vault", text: "indexed strategy-memo-v3.md (14kb)", tone: "muted" },
-  { source: "core", text: "voice.listener online — passive mode", tone: "success" },
-  { source: "agent-02", text: "reply drafted for thread #inbox/2841", tone: "accent" },
-  { source: "sys", text: "gc.pass reclaimed 42MB", tone: "muted" },
-  { source: "core", text: "priority queue rebalanced (3 items)", tone: "muted" },
-  { source: "agent-07", text: "calendar conflict resolved: 14:00", tone: "success" },
-  { source: "sys", text: "heartbeat 042ms — nominal", tone: "muted" },
-  { source: "core", text: "user.intent = focus_mode (confidence 0.91)", tone: "accent" },
-];
 
 // ─────────────────────────────────────────────────────────────
 // 3D Core
@@ -266,32 +221,39 @@ function GlowBar({ pct, tone }: { pct: number; tone: "accent" | "success" }) {
 // LEFT PANEL
 // ─────────────────────────────────────────────────────────────
 
-const MOCK_TOKENS = [8, 14, 11, 22, 19, 31, 28, 40, 46, 44, 55, 62, 58, 71, 68, 74, 80, 77, 88, 92];
-
 function TokenSparkline() {
   const live = useJarvisStore((s) => s.liveState);
-  const raw = live?.tokens?.length ? live.tokens : MOCK_TOKENS;
-  const label = live?.tokensLabel ?? "92k";
+  const raw: number[] = live?.tokens?.length ? live.tokens : []; // real series only — no invented curve
+  const label = live?.tokensLabel ?? "—";
 
   const points = useMemo(() => {
     const max = Math.max(...raw, 1);
-    return raw.map((v, i) => ({ x: (i / (raw.length - 1)) * 100, y: 100 - (v / max) * 90 }));
+    // Guard the single-point case: (i / (len-1)) divides by zero and yields NaN
+    // coordinates, which silently kills the path.
+    const span = Math.max(1, raw.length - 1);
+    return raw.map((v, i) => ({ x: (i / span) * 100, y: 100 - (v / max) * 90 }));
   }, [raw]);
   const line = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
-  const area = `${line} L 100 100 L 0 100 Z`;
+  const area = points.length > 1 ? `${line} L 100 100 L 0 100 Z` : "";
 
   return (
     <div className="relative h-[70px] w-full">
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
-        <defs>
-          <linearGradient id="tok-fill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.35" />
-            <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <path d={area} fill="url(#tok-fill)" />
-        <path d={line} fill="none" stroke="#a78bfa" strokeWidth={0.8} vectorEffect="non-scaling-stroke" />
-      </svg>
+      {points.length === 0 ? (
+        <div className="absolute inset-0 grid place-items-center font-mono text-[10px] text-muted-foreground">
+          {live ? "no token activity yet" : "…"}
+        </div>
+      ) : (
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 h-full w-full">
+          <defs>
+            <linearGradient id="tok-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.35" />
+              <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {area && <path d={area} fill="url(#tok-fill)" />}
+          <path d={line} fill="none" stroke="#a78bfa" strokeWidth={0.8} vectorEffect="non-scaling-stroke" />
+        </svg>
+      )}
       <div className="absolute right-0 top-0 font-mono text-[10px] text-muted-foreground">
         <span className="text-white/90">{label}</span> total
       </div>
@@ -301,11 +263,57 @@ function TokenSparkline() {
 }
 
 function LeftPanel() {
+  const activeFolder = useJarvisStore((s) => s.activeFolder);
   const live = useJarvisStore((s) => s.liveState);
-  const vitals = live?.vitals?.length ? live.vitals : VITALS;
-  const directives = live?.directives?.length ? live.directives : DIRECTIVES;
-  const docs = live?.documents?.length ? live.documents : DOCS;
-  const tokensLabel = live?.tokensLabel ?? "92K/hr";
+  
+  const projectStats = useJarvisStore((s) => s.projectStats);
+  const setProjectStats = useJarvisStore((s) => s.setProjectStats);
+
+  useEffect(() => {
+    if (!activeFolder) {
+      setProjectStats(null);
+      return;
+    }
+    fetch(`http://localhost:3030/project-stats?folder=${encodeURIComponent(activeFolder)}`)
+      .then(r => r.json())
+      .then(d => setProjectStats(d))
+      .catch(e => console.error("Failed to fetch project stats", e));
+  }, [activeFolder, setProjectStats]);
+
+  const loading = !live;
+  
+  let vitals = live?.vitals ? [...live.vitals] : [];
+  if (projectStats && vitals.length >= 2) {
+    const fmtK = (n: number) => {
+      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+      if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+      return String(n);
+    };
+    vitals[0] = {
+      label: 'TOKENS',
+      value: fmtK(projectStats.estTokens),
+      pct: Math.min(100, Math.max(2, (projectStats.estTokens / 50000) * 100)),
+      tone: 'accent'
+    };
+    vitals[1] = {
+      label: 'SIZE',
+      value: `${Math.round(parseFloat(projectStats.sizeMb))}MB`,
+      pct: Math.min(100, Math.max(2, (parseFloat(projectStats.sizeMb) / 100) * 100)),
+      tone: 'accent'
+    };
+  }
+
+  let directives = live?.directives ?? [];
+  let docs = live?.documents ?? [];
+  let calendar = live?.calendar ?? [];
+  
+  if (projectStats && projectStats.dashboard) {
+    if (projectStats.dashboard.documents) docs = projectStats.dashboard.documents;
+    if (projectStats.dashboard.directives) directives = projectStats.dashboard.directives;
+    if (projectStats.dashboard.calendar) calendar = projectStats.dashboard.calendar;
+  }
+
+  const tokensLabel = live?.tokensLabel ?? "—";
 
   return (
     <aside className="glass-panel flex flex-col gap-5 p-5 overflow-hidden h-full">
@@ -322,6 +330,13 @@ function LeftPanel() {
       <div>
         <SectionHeader>System Vitals</SectionHeader>
         <div className="grid grid-cols-2 gap-x-5 gap-y-4">
+          {loading && Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="space-y-1.5">
+              <Skeleton className="h-2.5 w-14" />
+              <Skeleton className="h-6 w-16" />
+              <Skeleton className="h-1 w-full" />
+            </div>
+          ))}
           {vitals.map((v) => (
             <div key={v.label} className="space-y-1.5">
               <div className="flex items-baseline justify-between">
@@ -346,6 +361,12 @@ function LeftPanel() {
           Current Directives
         </SectionHeader>
         <ul className="space-y-2">
+          {loading && Array.from({ length: 3 }).map((_, i) => (
+            <li key={i} className="flex items-start gap-3"><Skeleton className="h-3 w-full" /></li>
+          ))}
+          {!loading && directives.length === 0 && (
+            <li className="font-mono text-[10px] text-muted-foreground">No directives.</li>
+          )}
           {directives.map((d, i) => (
             <li key={d.id} className="flex items-start gap-3">
               <span className="font-mono text-[10px] text-muted-foreground mt-1 tabular-nums">0{i + 1}</span>
@@ -389,53 +410,60 @@ function LeftPanel() {
 // CENTER STAGE
 // ─────────────────────────────────────────────────────────────
 
-function fmtTime(d: Date) {
-  return d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-/** Mock idle feed — runs only while no live orchestrator logs exist. */
-function MockFeed() {
-  const [lines, setLines] = useState<LogLine[]>([]);
-  useEffect(() => {
-    const now = new Date();
-    const seed = LOG_SEEDS.slice(0, 6).map((s, i) => ({
-      ...s,
-      id: `seed-${i}`,
-      time: fmtTime(new Date(now.getTime() - (6 - i) * 4000)),
-    }));
-    setLines(seed);
-
-    let i = 0;
-    const t = setInterval(() => {
-      const src = LOG_SEEDS[i % LOG_SEEDS.length];
-      setLines((prev) => [...prev.slice(-14), { ...src, id: `${Date.now()}-${i}`, time: fmtTime(new Date()) }]);
-      i += 1;
-    }, 2200);
-    return () => clearInterval(t);
-  }, []);
+// When the feed is idle, turn the dead space into a real launchpad: open a chat
+// with any detected CLI, or jump straight into a project's sub-brain. Real data
+// only (detected CLIs + folders) — no invented rows.
+function IdleLaunchpad() {
+  const clis = useJarvisStore((s) => s.clis);
+  const folders = useJarvisStore((s) => s.folders);
+  const addPane = useJarvisStore((s) => s.addPane);
+  const setActiveFolder = useJarvisStore((s) => s.setActiveFolder);
+  const setView = useJarvisStore((s) => s.setView);
+  const available = clis.filter((c: any) => c.available);
 
   return (
-    <AnimatePresence initial={false}>
-      {lines.map((l) => (
-        <motion.div
-          key={l.id}
-          initial={{ x: -20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ type: "spring", damping: 22, stiffness: 260 }}
-          className="font-mono text-[12px] leading-[1.6] flex gap-3"
-        >
-          <span className="text-muted-foreground/60 tabular-nums">{l.time}</span>
-          <span
-            className="tabular-nums"
-            style={{ color: l.tone === "accent" ? "#a78bfa" : l.tone === "success" ? "#10b981" : "#87878a" }}
-          >
-            [{l.source}]
-          </span>
-          <span className="text-white/70">{l.text}</span>
-        </motion.div>
-      ))}
-    </AnimatePresence>
+    <div className="h-full flex flex-col items-center justify-center gap-7 px-6">
+      <div className="w-full max-w-[560px]">
+        <div className="font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground mb-2.5">Quick launch</div>
+        <div className="flex flex-wrap gap-2">
+          {available.length === 0 && (
+            <span className="font-mono text-[11px] text-muted-foreground">No CLIs detected.</span>
+          )}
+          {available.map((c: any) => (
+            <button
+              key={c.id}
+              onClick={() => addPane(c.id)}
+              title={`Open a chat with ${c.label}`}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-white/[0.08] hover:border-white/20 hover:bg-white/[0.03] transition-colors"
+            >
+              <MessagesSquare className="h-3.5 w-3.5" style={{ color: "#a78bfa" }} />
+              <span className="font-sans text-[12px] text-white/85">{c.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {folders.length > 0 && (
+        <div className="w-full max-w-[560px]">
+          <div className="font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground mb-2.5">Jump into a project</div>
+          <div className="flex flex-wrap gap-2">
+            {folders.slice(0, 12).map((f: string) => (
+              <button
+                key={f}
+                onClick={() => { setActiveFolder(f); setView("chats"); }}
+                title={`Open ${f} chats`}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-white/[0.08] hover:border-white/20 hover:bg-white/[0.03] transition-colors"
+              >
+                <FolderGit2 className="h-3 w-3 text-muted-foreground" />
+                <span className="font-mono text-[11px] text-white/75">{f}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="font-mono text-[10px] text-muted-foreground/50">waiting for agent activity…</div>
+    </div>
   );
 }
 
@@ -451,7 +479,7 @@ function TerminalFeed() {
   }, [liveLogs, hasLive]);
 
   return (
-    <div className="glass-panel h-[180px] flex flex-col overflow-hidden">
+    <div className="glass-panel h-full flex flex-col overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2 border-b border-white/[0.06]">
         <div className="flex items-center gap-2">
           <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
@@ -466,7 +494,7 @@ function TerminalFeed() {
               animation: "pulse-dot 1.4s infinite",
             }}
           />
-          <span className="font-mono text-[10px] text-muted-foreground">{connected ? "streaming" : "offline · demo"}</span>
+          <span className="font-mono text-[10px] text-muted-foreground">{connected ? "streaming" : "offline"}</span>
         </div>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-2" style={{ scrollbarWidth: "none" }}>
@@ -484,15 +512,21 @@ function TerminalFeed() {
               </motion.div>
             ))}
           </AnimatePresence>
+        ) : connected ? (
+          // Idle but connected: a real launchpad instead of dead space. (This used to
+          // render a fabricated <MockFeed/> — invented log lines presented as real.)
+          <IdleLaunchpad />
         ) : (
-          <MockFeed />
+          <div className="h-full grid place-items-center font-mono text-[11px] text-muted-foreground">
+            orchestrator offline — start it on :3030
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-type RunningSkill = { skill: Skill; step: number; progress: number; label?: string };
+type RunningSkill = { skill: Skill; step: number; progress: number; label?: string; failed?: boolean };
 
 function CenterStage({
   running,
@@ -506,17 +540,27 @@ function CenterStage({
   const connected = useJarvisStore((s) => s.connected);
 
   return (
-    <section className="relative flex flex-col gap-4 min-h-0 h-full">
-      {/* Top status bar */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <StatusPill label="CORE" active />
-          <StatusPill label="LISTENING" active={isListening} />
-          <StatusPill label="ONLINE" active={connected} />
+    <section className="relative flex flex-col gap-3 min-h-0 h-full">
+      {/* Compact core banner — a calm, audio-reactive accent (not a 50%-screen
+          decoration). Identity + voice + live status in one tidy row. */}
+      <div className="glass-panel relative flex items-center gap-4 px-4 py-3 shrink-0 overflow-hidden">
+        <div className="h-16 w-16 shrink-0">
+          <CoreCanvas />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-mono text-[9px] tracking-[0.3em] text-muted-foreground uppercase">The Core</div>
+          <div className="mt-0.5 font-sans text-[14px] font-medium" style={{ color: isListening ? "#6ee7b7" : "#c4b5fd" }}>
+            {isListening ? "listening…" : "standing by · ask anything"}
+          </div>
+          <div className="mt-2 flex items-center gap-1.5">
+            <StatusPill label="CORE" active />
+            <StatusPill label="LISTENING" active={isListening} />
+            <StatusPill label="ONLINE" active={connected} />
+          </div>
         </div>
         <button
           onClick={toggle}
-          className="glass-panel flex items-center gap-2 px-3 py-1.5 rounded-full transition-colors hover:bg-white/[0.04]"
+          className="glass-panel flex items-center gap-2 px-3 py-1.5 rounded-full transition-colors hover:bg-white/[0.04] shrink-0"
           style={isListening ? { borderColor: "rgba(16,185,129,0.5)", background: "rgba(16,185,129,0.08)" } : undefined}
           aria-label={isListening ? "Stop listening" : "Start listening"}
         >
@@ -530,55 +574,9 @@ function CenterStage({
         </button>
       </div>
 
-      {/* Core stage */}
-      <div className="relative flex-1 glass-panel overflow-hidden">
-        {/* Radial gradient backdrop */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{ background: "radial-gradient(ellipse at center, rgba(139,92,246,0.10), transparent 60%)" }}
-        />
-        {/* Scanline */}
-        <div
-          className="absolute inset-x-0 h-24 pointer-events-none opacity-30"
-          style={{
-            background: "linear-gradient(to bottom, transparent, rgba(139,92,246,0.15), transparent)",
-            animation: "scan 6s linear infinite",
-          }}
-        />
-
-        {/* Soft radial glow behind the core */}
-        <div
-          className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
-          style={{
-            width: "min(55vh, 620px)",
-            height: "min(55vh, 620px)",
-            background:
-              "radial-gradient(circle, rgba(139,92,246,0.35) 0%, rgba(139,92,246,0.12) 35%, rgba(139,92,246,0) 70%)",
-            filter: "blur(20px)",
-          }}
-        />
-
-        {/* 3D Core canvas — fills the stage between status bar and terminal feed */}
-        <div className="absolute inset-0 z-[1] flex items-center justify-center">
-          <div style={{ width: "100%", height: "100%" }}>
-            <CoreCanvas />
-          </div>
-        </div>
-
-        {/* Prompt line */}
-        <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center z-10">
-          <div className="font-mono text-[10px] tracking-[0.35em] text-muted-foreground uppercase">The Core</div>
-          <div className="mt-1 font-sans text-[14px] font-medium" style={{ color: "#c4b5fd" }}>
-            standing by · ask anything
-          </div>
-        </div>
-
-        {/* Corner ticks */}
-        {["top-4 left-4", "top-4 right-4", "bottom-4 left-4", "bottom-4 right-4"].map((pos, i) => (
-          <div key={i} className={`absolute ${pos} font-mono text-[9px] text-muted-foreground/50 z-10`}>
-            {["N", "E", "S", "W"][i]}·{["0x00", "0x1f", "0x2e", "0x4a"][i]}
-          </div>
-        ))}
+      {/* Live feed takes the reclaimed center — real agent activity, front and center */}
+      <div className="relative flex-1 min-h-0">
+        <TerminalFeed />
 
         {/* Running skill popup */}
         <AnimatePresence>
@@ -593,12 +591,19 @@ function CenterStage({
             >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-3">
-                  <div className="grid place-items-center h-9 w-9 rounded-lg" style={{ background: "rgba(139,92,246,0.15)", border: "1px solid rgba(139,92,246,0.35)" }}>
-                    <running.skill.icon className="h-4 w-4" style={{ color: "#c4b5fd" }} />
+                  <div className="grid place-items-center h-9 w-9 rounded-lg"
+                    style={{
+                      background: running.failed ? "rgba(239,68,68,0.15)" : "rgba(139,92,246,0.15)",
+                      border: `1px solid ${running.failed ? "rgba(239,68,68,0.4)" : "rgba(139,92,246,0.35)"}`,
+                    }}>
+                    <running.skill.icon className="h-4 w-4" style={{ color: running.failed ? "#fca5a5" : "#c4b5fd" }} />
                   </div>
                   <div>
                     <div className="font-sans text-[13px] font-medium text-white">{running.skill.label}</div>
-                    <div className="font-mono text-[10px] text-muted-foreground uppercase tracking-[0.2em]">automation · running</div>
+                    <div className={`font-mono text-[10px] uppercase tracking-[0.2em] ${running.failed ? "" : "text-muted-foreground"}`}
+                      style={running.failed ? { color: "#fca5a5" } : undefined}>
+                      {running.failed ? "automation · failed" : "automation · running"}
+                    </div>
                   </div>
                 </div>
                 <button
@@ -615,14 +620,17 @@ function CenterStage({
                   <span className="font-mono text-[11px] text-white/80 truncate pr-3">
                     {running.label ?? running.skill.steps[Math.min(running.step, running.skill.steps.length - 1)]}
                   </span>
-                  <span className="font-mono text-[11px] tabular-nums" style={{ color: "#a78bfa" }}>
+                  <span className="font-mono text-[11px] tabular-nums" style={{ color: running.failed ? "#fca5a5" : "#a78bfa" }}>
                     {Math.round(running.progress)}%
                   </span>
                 </div>
                 <div className="h-1 w-full rounded-full bg-white/[0.05] overflow-hidden">
                   <motion.div
                     className="h-full rounded-full"
-                    style={{ background: "#8b5cf6", boxShadow: "0 0 12px rgba(139,92,246,0.7)" }}
+                    style={{
+                      background: running.failed ? "#ef4444" : "#8b5cf6",
+                      boxShadow: running.failed ? "0 0 12px rgba(239,68,68,0.7)" : "0 0 12px rgba(139,92,246,0.7)",
+                    }}
                     animate={{ width: `${running.progress}%` }}
                     transition={{ ease: "easeOut", duration: 0.4 }}
                   />
@@ -650,8 +658,6 @@ function CenterStage({
           )}
         </AnimatePresence>
       </div>
-
-      <TerminalFeed />
     </section>
   );
 }
@@ -671,7 +677,7 @@ function Clock() {
   return (
     <div className="flex items-end justify-between">
       <div>
-        <div className="font-mono font-semibold text-[38px] leading-none text-white tabular-nums tracking-tight">
+        <div className="font-mono font-semibold text-[30px] leading-none text-white tabular-nums tracking-tight">
           {time}
         </div>
         <div className="mt-1.5 font-mono text-[10px] tracking-[0.2em] uppercase text-muted-foreground">
@@ -690,20 +696,25 @@ function Clock() {
 }
 
 function SkillMatrix({ onRun }: { onRun: (s: Skill) => void }) {
+  // Every tile dispatches to the orchestrator, so offline it can do nothing —
+  // disable rather than accept a click that goes nowhere.
+  const connected = useJarvisStore((s) => s.connected);
   return (
     <div className="grid grid-cols-2 gap-2">
       {SKILLS.map((s) => (
         <motion.button
           key={s.id}
           onClick={() => onRun(s)}
-          whileHover={{
+          disabled={!connected}
+          title={connected ? `Run ${s.label}` : "Orchestrator offline — start it on :3030"}
+          whileHover={connected ? {
             scale: 1.02,
             backgroundColor: "rgba(139,92,246,0.06)",
             borderColor: "rgba(139,92,246,0.35)",
-          }}
-          whileTap={{ scale: 0.97 }}
+          } : undefined}
+          whileTap={connected ? { scale: 0.97 } : undefined}
           transition={{ type: "spring", damping: 20, stiffness: 400 }}
-          className="group relative text-left p-3 rounded-xl border overflow-hidden"
+          className="group relative text-left p-3 rounded-xl border overflow-hidden disabled:opacity-40 disabled:cursor-not-allowed"
           style={{ background: "rgba(255,255,255,0.02)", borderColor: "rgba(255,255,255,0.08)" }}
         >
           <div className="flex items-start justify-between">
@@ -722,7 +733,13 @@ function SkillMatrix({ onRun }: { onRun: (s: Skill) => void }) {
 
 function Timeline() {
   const live = useJarvisStore((s) => s.liveState);
-  const events = live?.calendar?.length ? live.calendar : CALENDAR;
+  const projectStats = useJarvisStore((s) => s.projectStats);
+  
+  let events = live?.calendar ?? []; // real calendar only
+  if (projectStats?.dashboard?.calendar) {
+    events = projectStats.dashboard.calendar;
+  }
+
   return (
     <div className="relative">
       <div className="absolute left-[52px] top-2 bottom-2 w-px bg-white/[0.06]" />
@@ -768,7 +785,6 @@ function RightPanel({ onRun }: { onRun: (s: Skill) => void }) {
           <Radio className="h-3.5 w-3.5" style={{ color: "#10b981" }} />
           <div className="font-mono text-[11px] tracking-[0.25em] text-white/90">COMMAND DECK</div>
         </div>
-        <div className="font-mono text-[10px] text-muted-foreground">op·1</div>
       </div>
 
       <Clock />
@@ -820,15 +836,6 @@ function GridBackdrop() {
         </defs>
         <rect width="100%" height="100%" fill="url(#grid)" mask="url(#grid-mask)" />
       </svg>
-      {/* Ambient glows */}
-      <div
-        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[520px] w-[520px] rounded-full"
-        style={{ background: "radial-gradient(circle, rgba(139,92,246,0.10), transparent 70%)" }}
-      />
-      <div
-        className="absolute bottom-0 right-0 h-[300px] w-[300px] rounded-full"
-        style={{ background: "radial-gradient(circle, rgba(16,185,129,0.06), transparent 70%)" }}
-      />
     </div>
   );
 }
@@ -844,32 +851,31 @@ export function JarvisDashboard() {
   const liveSeen = useRef(false);
 
   function handleRun(s: Skill) {
+    if (!connected) return; // nothing would run; don't animate a lie
     liveSeen.current = false;
     setRunning({ skill: s, step: 0, progress: 0 });
-    const beId = SKILL_BACKEND_ID[s.id];
-    if (beId) sendSkill(beId);
+    sendSkill(SKILL_BACKEND_ID[s.id]);
   }
 
-  // Mock progress fallback. For a skill with a live backend, cap at 92% until the
-  // real COMPLETED/FAILED event lands; pure client-side skills animate to 100%.
+  // Indeterminate progress: the orchestrator reports status, not a percentage, so
+  // the bar creeps to show liveness. It hard-caps at 92% and only ever reaches 100%
+  // when a real COMPLETED/FAILED event arrives — a bar that filled on a timer would
+  // be reporting a success that hadn't happened.
   useEffect(() => {
     if (!running) return;
-    const beId = SKILL_BACKEND_ID[running.skill.id];
-    const backendDriven = !!beId && connected;
     const total = running.skill.steps.length;
     const t = setInterval(() => {
       setRunning((prev) => {
         if (!prev) return prev;
         if (liveSeen.current) return prev; // real data now drives it
-        const cap = backendDriven ? 92 : 100;
-        const next = Math.min(cap, prev.progress + 2 + Math.random() * 3);
+        const next = Math.min(92, prev.progress + 2 + Math.random() * 3);
         const step = Math.min(total - 1, Math.floor((next / 100) * total));
         return { ...prev, progress: next, step };
       });
     }, 220);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running?.skill.id, connected]);
+  }, [running?.skill.id]);
 
   // Live override: adopt real skill_state from the orchestrator.
   useEffect(() => {
@@ -882,13 +888,15 @@ export function JarvisDashboard() {
     const total = running.skill.steps.length;
     if (live.status === "COMPLETED" || live.status === "FAILED") {
       liveSeen.current = true;
+      const failed = live.status === "FAILED";
       setRunning((prev) =>
-        prev ? { ...prev, progress: 100, step: total - 1, label: live.currentActionLog } : prev,
+        prev ? { ...prev, progress: 100, step: total - 1, label: live.currentActionLog, failed } : prev,
       );
-      const id = setTimeout(() => setRunning(null), 1800);
+      // Hold a failure on screen longer — it's the case worth reading.
+      const id = setTimeout(() => setRunning(null), failed ? 5000 : 1800);
       return () => clearTimeout(id);
     }
-    // RUNNING: adopt the real action-log label; let mock animate the bar toward the cap.
+    // RUNNING: adopt the real action-log label; the creep animates toward the cap.
     setRunning((prev) => (prev ? { ...prev, label: live.currentActionLog } : prev));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSkills, running?.skill.id]);
