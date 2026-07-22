@@ -23,7 +23,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { mcpCatalog } from './mcp.js';
 import { SKILLS } from './skills.js';
-import { listSkills } from './skillsManager.js';
+import { getEnabledSkillInstructions, listSkills } from './skillsManager.js';
+import { listPlugins } from './plugins.js';
 import { isRuflowEnabled, getRuflowInjection, recordToMemoryBank } from './ruflow.js';
 import { analyzeProject } from './projectAnalyzer.js';
 
@@ -412,6 +413,8 @@ export function getContext(folder) {
     if (!list.length) return '';
     return list.map((s) => `- ${s.id}: ${s.label}`).join('\n');
   })();
+  const skillInstructions = ruflowOn ? '' : getEnabledSkillInstructions(folder);
+  const plugins = listPlugins(folder).filter((p) => p.enabled).map((p) => `- ${p.label || p.id}`).join('\n');
 
   return [
     '===== JARVIS BRAIN (shared cross-CLI memory — use it, do not repeat verbatim) =====',
@@ -424,6 +427,8 @@ export function getContext(folder) {
     globalRecent ? `# Recent across all projects (all CLIs)\n${globalRecent}` : '',
     mcpTools ? `# MCP servers available (tools you can use)\n${mcpTools}` : '',
     skillsCatalog ? `# Jarvis skills available (SOPs — describe to run one)\n${skillsCatalog}` : '',
+    skillInstructions ? `# Enabled skill instructions\n${skillInstructions}` : '',
+    plugins ? `# Enabled Jarvis plugins\n${plugins}` : '',
     '# INSTRUCTION: Always provide concise and terse responses unless explicitly asked for detail.',
     '===== END BRAIN =====',
   ]

@@ -57,6 +57,22 @@ export const useJarvisStore = create((set) => ({
   usage: null, // { agents:[...], totals:{...}, live:{...} }
   setUsage: (usage) => set({ usage }),
 
+  // ---- Operations workspace: live orchestration data ----
+  agentActivity: [],
+  setAgentActivity: (agentActivity) => set({ agentActivity }),
+  missions: [],
+  setMissions: (missions) => set({ missions }),
+  addMission: (mission) => set((s) => ({ missions: [mission, ...s.missions].slice(0, 30) })),
+  updateMission: (id, patch) => set((s) => ({ missions: s.missions.map((m) => m.id === id ? { ...m, ...patch } : m) })),
+  operationsHealth: null,
+  setOperationsHealth: (operationsHealth) => set({ operationsHealth }),
+  reviewEvidence: null,
+  setReviewEvidence: (reviewEvidence) => set({ reviewEvidence }),
+  approvals: [],
+  setApprovals: (approvals) => set({ approvals }),
+  routingProfiles: {},
+  setRoutingProfiles: (routingProfiles) => set({ routingProfiles }),
+
   // ---- Multi-CLI chat + brain ----
   clis: [], // [{id,label,available,models,efforts,nativeEffort,setupCmd}]
   setClis: (clis) => set({ clis }),

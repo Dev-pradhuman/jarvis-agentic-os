@@ -55,7 +55,14 @@ export function runCli(cli, model, effort, cwd, prompt, onChunk = () => {}, onCh
   return new Promise((resolve) => {
     let proc;
     try {
-      proc = spawn(command, args, { cwd, shell: useShell });
+      const env = { ...process.env };
+      // Router is deliberately opt-in: normal Claude Code keeps the user's Pro auth.
+      if (cli.id === 'router9') {
+        env.ANTHROPIC_BASE_URL = process.env.JARVIS_9ROUTER_URL || 'http://127.0.0.1:20128/v1';
+        env.ANTHROPIC_API_KEY = process.env.ROUTER9_API_KEY || process.env.JARVIS_9ROUTER_API_KEY || 'sk_9router';
+      }
+
+      proc = spawn(command, args, { cwd, shell: useShell, env });
     } catch (e) {
       resolve({ status: 'error', code: -1, output: `spawn failed: ${e.message}` });
       return;

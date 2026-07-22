@@ -96,6 +96,20 @@ export function listSkills(folder) {
     .sort((a, b) => a.label.localeCompare(b.label));
 }
 
+/** Compact executable instructions injected into every CLI's shared context. */
+export function getEnabledSkillInstructions(folder, maxChars = 12000) {
+  let used = 0;
+  const parts = [];
+  for (const skill of listSkills(folder).filter((s) => s.enabled)) {
+    const text = readSkill(skill.id).trim();
+    if (!text || used >= maxChars) continue;
+    const clipped = text.slice(0, Math.min(maxChars - used, 1800));
+    parts.push(`## ${skill.id}\n${clipped}`);
+    used += clipped.length;
+  }
+  return parts.join('\n\n');
+}
+
 /** Full SOP text for the editor. */
 export function readSkill(id) {
   const full = path.join(SKILLS_DIR, fileFromId(id));

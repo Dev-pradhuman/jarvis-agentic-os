@@ -1,18 +1,23 @@
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Activity, Command, FolderGit2, MessagesSquare, Plug, Square, Zap } from 'lucide-react';
 import { ProjectsTab } from './components/ProjectsTab';
+import { OperationsTab } from './components/OperationsTab';
 import { ChatsTab } from './components/ChatsTab';
-import { SkillsTab } from './components/SkillsTab';
-import { McpsTab } from './components/McpsTab';
-import { PluginsTab } from './components/PluginsTab';
-import { UsageTab } from './components/UsageTab';
-import { CommandPalette } from './components/CommandPalette';
 import { useSocket, stopAll } from './hooks/useSocket';
 import { useJarvisStore } from './store';
 import { Box, BrainCircuit, Power } from 'lucide-react';
 import { ToastHost } from './components/ui';
 
+// These are not needed for the initial dashboard render; split their sizeable
+// dependency trees so opening Jarvis is faster on a cold browser cache.
+const SkillsTab = lazy(() => import('./components/SkillsTab').then((m) => ({ default: m.SkillsTab })));
+const McpsTab = lazy(() => import('./components/McpsTab').then((m) => ({ default: m.McpsTab })));
+const PluginsTab = lazy(() => import('./components/PluginsTab').then((m) => ({ default: m.PluginsTab })));
+const UsageTab = lazy(() => import('./components/UsageTab').then((m) => ({ default: m.UsageTab })));
+const CommandPalette = lazy(() => import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })));
+
 const TABS = [
+  { id: 'operations', icon: Activity, label: 'Operations' },
   { id: 'projects', icon: FolderGit2, label: 'Projects' },
   { id: 'chats', icon: MessagesSquare, label: 'Chats' },
   { id: 'skills', icon: Zap, label: 'Skills' },
@@ -33,11 +38,11 @@ function TabBar() {
   const Tab = ({ id, icon: Icon, label, index }) => (
     <button
       onClick={() => setView(id)}
-      className="group flex items-center gap-2 px-3 py-1.5 rounded-lg font-mono text-[11px] tracking-wider uppercase transition-colors"
+      className="group flex items-center gap-2 px-3 py-2 rounded-md font-mono text-[10px] tracking-wider uppercase transition-colors"
       style={{
-        color: view === id ? '#c4b5fd' : '#87878a',
-        background: view === id ? 'rgba(139,92,246,0.12)' : 'transparent',
-        border: `1px solid ${view === id ? 'rgba(139,92,246,0.35)' : 'transparent'}`,
+        color: view === id ? '#101413' : '#91a19a',
+        background: view === id ? '#d8ff5e' : 'transparent',
+        border: '1px solid transparent',
       }}
       title={`${label} · Ctrl+${index + 1}`}
     >
@@ -52,12 +57,12 @@ function TabBar() {
   );
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5 border-b border-white/[0.06] relative">
+    <div className="flex items-center gap-5 px-5 py-3 border-b border-[#29332f] bg-[#101413]">
       {/* header wash — the depth from the COMMAND DECK reference */}
       <div className="absolute inset-0 pointer-events-none"
         style={{ background: 'radial-gradient(80% 300% at 0% 50%, rgba(139,92,246,0.10), transparent 70%)' }} />
 
-      <div className="flex items-center gap-2 pl-1 relative">
+      <div className="flex items-center gap-2 pl-1">
         <span className="grid place-items-center h-6 w-6 rounded-lg"
           style={{ background: 'linear-gradient(140deg,#8b5cf6,#6366f1)', boxShadow: '0 0 14px rgba(139,92,246,0.45)' }}>
           <BrainCircuit className="h-3.5 w-3.5 text-white" />
@@ -65,13 +70,13 @@ function TabBar() {
         <span className="font-mono text-[12px] tracking-[0.28em] text-white/95">JARVIS.OS</span>
       </div>
 
-      <div className="flex items-center gap-1.5 relative">
+      <div className="flex items-center gap-1.5">
         {TABS.map((t, i) => (
           <Tab key={t.id} {...t} index={i} />
         ))}
       </div>
 
-      <div className="ml-auto flex items-center gap-2 relative">
+      <div className="ml-auto flex items-center gap-2">
         <button
           onClick={togglePalette}
           className="flex items-center gap-1.5 px-2 py-1 rounded-md font-mono text-[10px] text-muted-foreground border border-white/[0.08] hover:border-white/20 hover:text-white/80 transition-colors"
@@ -106,6 +111,7 @@ function TabBar() {
 }
 
 const VIEWS = {
+  operations: OperationsTab,
   projects: ProjectsTab,
   chats: ChatsTab,
   skills: SkillsTab,
@@ -151,9 +157,9 @@ export default function App() {
     <div className="h-screen w-screen flex flex-col overflow-hidden">
       <TabBar />
       <div className="flex-1 min-h-0">
-        <Current />
+        <Suspense fallback={<div className="h-full grid place-items-center font-mono text-xs text-muted-foreground">loading module…</div>}><Current /></Suspense>
       </div>
-      <CommandPalette />
+      <Suspense fallback={null}><CommandPalette /></Suspense>
       <ToastHost />
     </div>
   );

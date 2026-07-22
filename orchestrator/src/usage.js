@@ -109,6 +109,7 @@ export function aggregateUsage() {
 
   return {
     agents,
+    timeline: chats.slice(-30).map((c) => ({ ts: c.ts || 0, cli: c.cli || 'unknown', tokens: estTokens((c.prompt?.length || 0) + (c.response?.length || 0)), durationMs: Number(c.durationMs) || 0, status: c.status || 'unknown', error: c.status && c.status !== 'success' ? String(c.response || '').slice(0, 180) : '' })),
     totals: {
       runs: totalRuns,
       tokens: totalTokens,

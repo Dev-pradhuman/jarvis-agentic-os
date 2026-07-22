@@ -16,12 +16,12 @@
  * @property {Record<string, any>} extractedParameters
  */
 
-import path from 'node:path';
 import { getRoles } from './roles.js';
 import { getCli } from './cli.js';
 import { runCli } from './cliRunner.js';
 import { runApiChat } from './providers.js';
 import { ROOT } from './brain.js';
+import { projectPath } from './security.js';
 
 // ---- Tier 1: deterministic RegEx dictionary -------------------------------
 const REGEX_RULES = [
@@ -98,7 +98,7 @@ async function tier2(transcriptId, text, folder) {
     } else {
       const cli = getCli(roleCfg.id);
       if (!cli || !cli.available) return null;
-      const cwd = folder ? path.join(ROOT, folder) : ROOT;
+      const cwd = projectPath(ROOT, folder);
       const result = await runCli(cli, roleCfg.model, roleCfg.effort, cwd, fullPrompt);
       outputText = result?.output ?? '';
     }

@@ -55,6 +55,23 @@ const DEFS = {
       return args;
     },
   },
+  // A separate Claude entry keeps your Claude Pro login untouched. Configure the
+  // local router with ROUTER9_API_KEY (or use its dashboard key) in .env.
+  router9: {
+    id: 'router9',
+    label: '9Router · Claude',
+    cmd: 'claude',
+    setupCmd: 'start http://127.0.0.1:20128/dashboard',
+    nativeEffort: true,
+    efforts: ['low', 'medium', 'high'],
+    models: [{ id: 'kr/claude-sonnet-4.5', label: 'Claude Sonnet 4.5 via 9Router' }],
+    build(model, effort) {
+      const args = ['-p', '--dangerously-skip-permissions'];
+      if (model) args.push('--model', model);
+      if (effort) args.push('--effort', effort);
+      return args;
+    },
+  },
   opencode: {
     id: 'opencode',
     label: 'OpenCode',

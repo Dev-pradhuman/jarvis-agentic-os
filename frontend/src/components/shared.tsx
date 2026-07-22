@@ -169,6 +169,7 @@ export function McpModal({ onClose }: { onClose: () => void }) {
 }
 
 const PROVIDER_PRESETS = [
+  { label: "9Router (local)", baseUrl: "http://127.0.0.1:20128/v1", providerType: "openai" },
   { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", providerType: "openrouter" },
   { label: "Groq", baseUrl: "https://api.groq.com/openai/v1", providerType: "groq" },
   { label: "Anthropic", baseUrl: "https://api.anthropic.com", providerType: "anthropic" },

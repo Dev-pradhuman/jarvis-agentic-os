@@ -1,9 +1,9 @@
-import path from 'node:path';
 import { getRoles } from './roles.js';
 import { getCli } from './cli.js';
 import { runCli } from './cliRunner.js';
 import { runApiChat } from './providers.js';
 import { ROOT } from './brain.js';
+import { projectPath } from './security.js';
 
 export async function enhancePrompt({ raw, cliId, folder, brainContext }) {
   const roles = getRoles(folder);
@@ -43,7 +43,7 @@ The 'note' should be a one-line reason for the change, shown to the user.`;
       if (!cli || !cli.available) {
         return { enhanced: raw, changed: false, note: `Enhancer CLI ${enhancerConfig.id} is unavailable.` };
       }
-      const cwd = folder ? path.join(ROOT, folder) : ROOT;
+      const cwd = projectPath(ROOT, folder);
       const result = await runCli(
         cli,
         enhancerConfig.model,

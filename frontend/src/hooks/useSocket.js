@@ -58,6 +58,12 @@ export function useSocket() {
       if (intent === 'UI_CLEAR_CONTEXT') clearPopups();
     });
     socket.on('state_update', (state) => setLiveState(state));
+    socket.on('agent_activity', (activity) => useJarvisStore.getState().setAgentActivity(activity || []));
+    socket.on('operations_health', (health) => useJarvisStore.getState().setOperationsHealth(health));
+    socket.on('operations_review', (review) => useJarvisStore.getState().setReviewEvidence(review));
+    socket.on('approval_list', (approvals) => useJarvisStore.getState().setApprovals(approvals || []));
+    socket.on('mission_list', (missions) => useJarvisStore.getState().setMissions(missions || []));
+    socket.on('routing_profiles', (profiles) => useJarvisStore.getState().setRoutingProfiles(profiles || {}));
 
     // Multi-CLI chat + brain
     socket.on('cli_list', (clis) => setClis(clis));
@@ -203,8 +209,8 @@ export function sendSkill(skillId, parameters = {}) {
 }
 
 /** Send a chat to a real CLI (runs it on the machine with the shared brain). */
-export function sendChat({ cliId, model, effort, folder, prompt }) {
-  socket?.emit('chat_send', { cliId, model, effort, folder, prompt });
+export function sendChat({ cliId, model, effort, folder, prompt, missionId, missionStage }) {
+  socket?.emit('chat_send', { cliId, model, effort, folder, prompt, missionId, missionStage });
 }
 
 /** Request the brain's chat history for a folder ('' = global). */
@@ -318,6 +324,13 @@ export function scaffoldPlugin(name, folder = '') {
 export function requestUsage() {
   socket?.emit('usage_request');
 }
+export function requestOperationsHealth() { socket?.emit('operations_health_request'); }
+export function requestReviewEvidence(folder = '') { socket?.emit('operations_review_request', { folder }); }
+export function requestApprovals() { socket?.emit('approval_request_list'); }
+export function decideApproval(id, approved) { socket?.emit('approval_decide', { id, approved }); }
+export function requestMissions(folder = '') { socket?.emit('mission_list_request', { folder }); }
+export function createMission(title, folder = '') { socket?.emit('mission_create', { title, folder }); }
+export function updateMission(id, patch, folder = '') { socket?.emit('mission_update', { id, patch, folder }); }
 
 // ── Control + memory + search ──
 export function stopChat(chatId) {
