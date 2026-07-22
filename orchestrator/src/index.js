@@ -9,7 +9,7 @@
  * calendar, token usage) to all clients on an interval.
  */
 
-import 'dotenv/config';
+import './env.js';
 import fs from 'node:fs';
 import http from 'node:http';
 import cors from 'cors';

@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './brain.js';
-
-const ENV_FILE = path.resolve(process.cwd(), '.env');
+import { ENV_FILE } from './env.js';
 export function setupStatus() { return { configured: !!process.env.JARVIS_PROJECTS_ROOT, projectsRoot: ROOT, brainReady: fs.existsSync(path.join(ROOT, '.jarvis-brain', 'BRAIN.md')) }; }
 export function saveSetup({ projectsRoot, createBrain }) {
   const root = path.resolve(String(projectsRoot || '').trim());
